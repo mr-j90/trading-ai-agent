@@ -2,7 +2,7 @@
 
 from types import SimpleNamespace as P
 
-from main import MAX_ORDERS, Order, guard_orders, validate
+from main import MAX_ORDERS, Order, apply_deposit, benchmark_value, guard_orders, validate
 
 equity, cash = 500.0, 300.0
 held = {"IESC": 150.0, "NVDA": 50.0}
@@ -71,5 +71,19 @@ assert len(orders) == 1 and orders[0].notional_usd == 40 and "trim" in orders[0]
 # a closed position drops out of peaks
 _, peaks = guard_orders([pos("META", 100, 100)], 500, {"GOOGL": 150})
 assert peaks == {"META": 100}
+
+# ---- deposit-aware benchmark ledger ----
+prices0 = {"A": 10.0, "B": 20.0}
+led = apply_deposit({"contributed": 0.0, "units": {}, "seen": []}, 500, prices0)
+assert led["contributed"] == 500 and led["units"] == {"A": 25.0, "B": 12.5}
+assert benchmark_value(led, prices0) == 500
+# prices double -> benchmark doubles; a $200 deposit then buys at the new prices
+prices1 = {"A": 20.0, "B": 40.0}
+assert benchmark_value(led, prices1) == 1000
+led = apply_deposit(led, 200, prices1)
+assert led["contributed"] == 700 and led["units"] == {"A": 30.0, "B": 15.0} and benchmark_value(led, prices1) == 1200
+# withdrawal reduces contributed only; original ledger untouched
+led2 = apply_deposit(led, -100, prices1)
+assert led2["contributed"] == 600 and led2["units"] == led["units"] and led["contributed"] == 700
 
 print("ok")

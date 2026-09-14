@@ -4,12 +4,11 @@ import { useEffect, useState } from "react";
 type Position = { symbol: string; sector: string; qty: number; marketValue: number; price: number; unrealizedPl: number; unrealizedPlpc: number; dayChangePc: number };
 type Entry = { ts: string; equity: number; market_view: string; placed: any[]; rejected: any[]; error: string | null };
 type State = {
-  now: string; equity: number; cash: number; startOfDayEquity: number; benchmarkReturn: number | null; halt: string | null;
+  now: string; equity: number; cash: number; startOfDayEquity: number; contributed: number; benchmarkValue: number | null; halt: string | null;
   lastRun: string | null; lastError: string | null; nextRun: string | null; curve: [number, number][];
   positions: Position[]; watchlist: Record<string, string[]>; prices: Record<string, { price: number; dayPc: number | null }>; journal: Entry[];
 };
 
-const START = 500;
 const POLL_MS = 15_000;
 const usd = (n: number) => n.toLocaleString("en-US", { style: "currency", currency: "USD" });
 const pct = (n: number | null, d = 2) => (n == null ? "–" : `${n >= 0 ? "+" : ""}${(n * 100).toFixed(d)}%`);
@@ -43,9 +42,10 @@ export default function Page() {
   };
 
   if (!s) return <main className="wrap"><p className="muted">{err ?? "loading…"}</p></main>;
-  const sinceStart = s.equity / START - 1;
+  const sinceStart = s.equity / s.contributed - 1;
   const day = s.equity / s.startOfDayEquity - 1;
-  const gap = s.benchmarkReturn == null ? null : sinceStart - s.benchmarkReturn;
+  const benchRet = s.benchmarkValue == null ? null : s.benchmarkValue / s.contributed - 1;
+  const gap = benchRet == null ? null : sinceStart - benchRet;
 
   return (
     <main className="wrap">
@@ -66,11 +66,11 @@ export default function Page() {
           <div className="big">{usd(s.equity)}</div>
           <div className="row">
             <Stat label="today" value={pct(day)} t={tone(day)} />
-            <Stat label="since $500" value={pct(sinceStart)} t={tone(sinceStart)} />
-            <Stat label="vs benchmark" value={gap == null ? "day 1" : `${(gap * 100).toFixed(1)} pts`} t={tone(gap)} />
+            <Stat label={`on ${usd(s.contributed)} contributed`} value={pct(sinceStart)} t={tone(sinceStart)} />
+            <Stat label={s.benchmarkValue == null ? "vs benchmark" : `vs benchmark ${usd(s.benchmarkValue)}`} value={gap == null ? "day 1" : `${(gap * 100).toFixed(1)} pts`} t={tone(gap)} />
             <Stat label="cash" value={usd(s.cash)} />
           </div>
-          <Curve points={s.curve} />
+          <Curve points={s.curve} baseline={s.contributed} />
         </div>
 
         <div className="card">
@@ -186,13 +186,13 @@ function Stat({ label, value, t = "" }: { label: string; value: string; t?: stri
 }
 
 /** Single-series equity line with crosshair + tooltip. */
-function Curve({ points }: { points: [number, number][] }) {
+function Curve({ points, baseline }: { points: [number, number][]; baseline: number }) {
   const [i, setI] = useState<number | null>(null);
   const W = 640, H = 140, P = 6;
   if (points.length < 2) return <p className="muted small">equity curve appears after the first market day</p>;
   const xs = points.map((p) => p[0]), ys = points.map((p) => p[1]);
   const [x0, x1] = [Math.min(...xs), Math.max(...xs)];
-  const [y0, y1] = [Math.min(...ys, START), Math.max(...ys, START)];
+  const [y0, y1] = [Math.min(...ys, baseline), Math.max(...ys, baseline)];
   const X = (t: number) => P + ((t - x0) / (x1 - x0 || 1)) * (W - 2 * P);
   const Y = (v: number) => H - P - ((v - y0) / (y1 - y0 || 1)) * (H - 2 * P);
   const d = points.map(([t, v], k) => `${k ? "L" : "M"}${X(t).toFixed(1)},${Y(v).toFixed(1)}`).join("");
@@ -207,14 +207,14 @@ function Curve({ points }: { points: [number, number][] }) {
   return (
     <div className="curve">
       <svg viewBox={`0 0 ${W} ${H}`} onMouseMove={onMove} onMouseLeave={() => setI(null)} role="img" aria-label="Equity over time">
-        <line x1={P} x2={W - P} y1={Y(START)} y2={Y(START)} className="baseline" />
+        <line x1={P} x2={W - P} y1={Y(baseline)} y2={Y(baseline)} className="baseline" />
         <path d={d} className="series" />
         {hover && <>
           <line x1={X(hover[0])} x2={X(hover[0])} y1={P} y2={H - P} className="crosshair" />
           <circle cx={X(hover[0])} cy={Y(hover[1])} r={4} className="marker" />
         </>}
       </svg>
-      <div className="muted small">{hover ? `${new Date(hover[0]).toLocaleString()} · ${usd(hover[1])}` : `${new Date(x0).toLocaleDateString()} → now · dashed line = $${START}`}</div>
+      <div className="muted small">{hover ? `${new Date(hover[0]).toLocaleString()} · ${usd(hover[1])}` : `${new Date(x0).toLocaleDateString()} → now · dashed line = ${usd(baseline)} contributed`}</div>
     </div>
   );
 }

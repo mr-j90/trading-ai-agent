@@ -45,7 +45,7 @@ DAILY_STOP_PCT = 0.03
 MAX_ORDERS = 5
 STOP_LOSS_PCT = 0.08  # from entry
 TRAILING_STOP_PCT = 0.10  # from the position's peak price
-KILL_EQUITY = 400.0
+KILL_DRAWDOWN_PCT = 0.20  # of contributed capital (was a fixed $400 on $500)
 KILL_BENCHMARK_GAP = 0.15
 SUMMARY_WINDOW = timedelta(minutes=90)
 SYMBOLS = list(SECTOR_OF)
@@ -53,7 +53,7 @@ UTC = timezone.utc
 
 ROOT = Path(__file__).parent
 JOURNAL = ROOT / "journal.jsonl"
-BENCHMARK = ROOT / "benchmark.json"
+BENCHMARK = ROOT / "benchmark.json"  # ledger: contributed capital, benchmark share units, deposit ids seen
 PEAKS = ROOT / "peaks.json"  # symbol -> highest price seen while held
 HALT = ROOT / "HALT"
 LOCK = ROOT / ".lock"
@@ -187,13 +187,33 @@ def submit(o: Order, market_value: dict[str, float]):
 esc = html.escape  # model text goes inside Telegram HTML
 
 
-def benchmark_return(last_close: dict[str, float]) -> float | None:
-    if not BENCHMARK.exists():
-        BENCHMARK.write_text(json.dumps(last_close, indent=1))
-        return 0.0
-    base = json.loads(BENCHMARK.read_text())
-    rets = [last_close[s] / base[s] - 1 for s in base if s in last_close]
-    return sum(rets) / len(rets) if rets else None
+def apply_deposit(ledger: dict, amount: float, prices: dict[str, float]) -> dict:
+    """Pure. Add a cash flow to contributed capital; a deposit also buys the equal-weight basket at `prices`.
+    Withdrawals only reduce contributed capital (ponytail: benchmark keeps its shares; sell pro-rata if withdrawals become routine)."""
+    out = {**ledger, "units": dict(ledger.get("units", {})), "contributed": ledger.get("contributed", 0.0) + amount}
+    if amount > 0 and prices:
+        per = amount / len(prices)
+        for s, p in prices.items():
+            out["units"][s] = out["units"].get(s, 0.0) + per / p
+    return out
+
+
+def benchmark_value(ledger: dict, prices: dict[str, float]) -> float:
+    return sum(u * prices[s] for s, u in ledger["units"].items() if s in prices)
+
+
+def sync_ledger(prices: dict[str, float]) -> dict:
+    """Load the benchmark/contributions ledger, creating it on day one and folding in any new Alpaca cash deposits."""
+    if BENCHMARK.exists():
+        ledger = json.loads(BENCHMARK.read_text())
+    else:
+        ledger = apply_deposit({"contributed": 0.0, "units": {}, "seen": []}, START_EQUITY, prices)
+    for a in trading.get("/account/activities", {"activity_types": "CSD,CSW"}):  # empty on paper; real deposits show up here
+        if a["id"] not in ledger["seen"] and a.get("status") != "canceled":
+            ledger = apply_deposit(ledger, float(a["net_amount"]), prices)
+            ledger["seen"].append(a["id"])
+    BENCHMARK.write_text(json.dumps(ledger, indent=1))
+    return ledger
 
 
 def notify(text: str) -> None:
@@ -221,14 +241,15 @@ def halt(reason: str) -> None:
     notify(f"⛔ <b>Trading agent halted:</b> {esc(reason)}")
 
 
-def daily_summary(equity: float, cash: float, positions, today: list[dict], bench: float | None) -> str:
-    agent_ret = equity / START_EQUITY - 1
+def daily_summary(equity: float, cash: float, positions, today: list[dict], contributed: float, bench_value: float | None) -> str:
+    agent_ret = equity / contributed - 1
     lines = [f"<b>Trading agent, {today[-1]['ts'][:10]}</b>"]
     sod = next((e["equity"] for e in today if e.get("equity")), None)
     day = f"{equity / sod - 1:+.2%} today" if sod else ""
-    lines.append(f"Equity ${equity:.2f} (cash ${cash:.2f}), {day}, {agent_ret:+.2%} since start")
-    if bench is not None:
-        lines.append(f"Benchmark (equal-weight hold) {bench:+.2%}, gap {(agent_ret - bench) * 100:+.1f} pts")
+    lines.append(f"Equity ${equity:.2f} (cash ${cash:.2f}), {day}, {agent_ret:+.2%} on ${contributed:.0f} contributed")
+    if bench_value is not None:
+        bench = bench_value / contributed - 1
+        lines.append(f"Benchmark (equal-weight hold) ${bench_value:.2f}, {bench:+.2%}, gap {(agent_ret - bench) * 100:+.1f} pts")
     placed = [o for e in today for o in e["placed"]]
     rejected = [o for e in today for o in e["rejected"]]
     lines.append(f"\n<b>Trades ({len(placed)} placed, {len(rejected)} rejected)</b>")
@@ -322,12 +343,15 @@ def cycle(dry_run: bool, summary: bool = True) -> None:
         return
     append_journal(entry)
     if summary and clock.next_close - now <= SUMMARY_WINDOW:
-        bench = benchmark_return(last_close) if last_close else None
-        notify(daily_summary(equity, cash, positions, today + [entry], bench))
-        if equity < KILL_EQUITY:
-            halt(f"equity ${equity:.2f} below ${KILL_EQUITY:.0f}")
-        elif bench is not None and (equity / START_EQUITY - 1) - bench < -KILL_BENCHMARK_GAP:
-            halt(f"{(equity / START_EQUITY - 1 - bench) * 100:.1f} pts behind benchmark")
+        ledger = sync_ledger(last_close) if last_close else None
+        contributed = ledger["contributed"] if ledger else START_EQUITY
+        bench_value = benchmark_value(ledger, last_close) if ledger else None
+        notify(daily_summary(equity, cash, positions, today + [entry], contributed, bench_value))
+        agent_ret = equity / contributed - 1
+        if agent_ret < -KILL_DRAWDOWN_PCT:
+            halt(f"equity ${equity:.2f} is {agent_ret:.1%} on ${contributed:.0f} contributed")
+        elif bench_value is not None and agent_ret - (bench_value / contributed - 1) < -KILL_BENCHMARK_GAP:
+            halt(f"{(agent_ret - (bench_value / contributed - 1)) * 100:.1f} pts behind benchmark")
 
 
 def guard(dry_run: bool) -> None:

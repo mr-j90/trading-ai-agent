@@ -43,7 +43,8 @@ export async function GET() {
   const now = new Date();
   const journal = readJournal();
   const halt = existsSync(join(ROOT, "HALT")) ? readFileSync(join(ROOT, "HALT"), "utf8") : null;
-  const benchmarkBase: Record<string, number> | null = existsSync(join(ROOT, "benchmark.json"))
+  // ledger written by main.py: { contributed, units: {sym: shares}, seen: [deposit ids] }
+  const ledger: { contributed: number; units: Record<string, number> } | null = existsSync(join(ROOT, "benchmark.json"))
     ? JSON.parse(readFileSync(join(ROOT, "benchmark.json"), "utf8"))
     : null;
 
@@ -60,11 +61,8 @@ export async function GET() {
   const points = (h: any): [number, number][] => (h.timestamp as number[]).map((t, i) => [t * 1000, h.equity[i]]);
 
   const last = (s: string) => snapshots[s]?.latestTrade?.p ?? snapshots[s]?.dailyBar?.c;
-  let benchmarkReturn: number | null = null;
-  if (benchmarkBase) {
-    const rets = Object.entries(benchmarkBase).filter(([s]) => last(s)).map(([s, p0]) => last(s) / p0 - 1);
-    benchmarkReturn = rets.length ? rets.reduce((a, b) => a + b, 0) / rets.length : null;
-  }
+  const contributed = ledger?.contributed ?? 500;
+  const benchmarkValue = ledger ? Object.entries(ledger.units).reduce((sum, [s, u]) => sum + (last(s) ? u * last(s) : 0), 0) : null;
 
   const today = now.toISOString().slice(0, 10);
   const todayEntries = journal.filter((e) => e.ts.startsWith(today));
@@ -75,7 +73,8 @@ export async function GET() {
     equity: +account.equity,
     cash: +account.buying_power,
     startOfDayEquity: todayEntries.find((e) => e.equity)?.equity ?? +account.last_equity,
-    benchmarkReturn,
+    contributed,
+    benchmarkValue,
     halt,
     lastRun: journal.at(-1)?.ts ?? null,
     lastError: journal.at(-1)?.error ?? null,
