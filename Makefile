@@ -1,0 +1,37 @@
+UID := $(shell id -u)
+JOBS := com.ies.trading-agent com.ies.trading-agent-retry com.ies.trading-agent-guard
+PORT ?= 3210
+
+.PHONY: help dashboard test dry-run guard run status logs install uninstall
+
+help:  ## list targets
+	@grep -E '^[a-z-]+:.*##' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-10s %s\n", $$1, $$2}'
+
+dashboard:  ## start the Next.js dashboard on $(PORT)
+	cd dashboard && npm run dev -- --port $(PORT)
+
+test:  ## run the self-checks and type-check the dashboard
+	uv run python test_main.py
+	cd dashboard && npx tsc --noEmit -p .
+
+dry-run:  ## one decision cycle, nothing submitted
+	uv run --frozen main.py --dry-run
+
+guard:  ## one guard pass, nothing submitted
+	uv run --frozen main.py --guard --dry-run
+
+run:  ## one REAL decision cycle now (places paper orders, no summary)
+	uv run --frozen main.py --no-summary
+
+status:  ## launchd job states and the last journal entries
+	@for j in $(JOBS); do printf "%-32s" $$j; launchctl print gui/$(UID)/$$j 2>/dev/null | awk '/^\t(state|runs|last exit code) =/{printf "%s ", $$0}'; echo; done
+	@tail -n 3 journal.jsonl 2>/dev/null | python3 -c 'import sys,json; [print(e["ts"][:16], e.get("kind","cycle"), "placed", len(e["placed"]), "err" if e["error"] else "", (e["market_view"] or "")[:70]) for e in map(json.loads, sys.stdin)]'
+
+logs:  ## follow agent.log
+	tail -f agent.log
+
+install:  ## copy plists to ~/Library/LaunchAgents and (re)load all three jobs
+	@for j in $(JOBS); do cp $$j.plist ~/Library/LaunchAgents/; launchctl bootout gui/$(UID)/$$j 2>/dev/null || true; launchctl bootstrap gui/$(UID) ~/Library/LaunchAgents/$$j.plist && echo "loaded $$j"; done
+
+uninstall:  ## unload all three jobs (files stay)
+	@for j in $(JOBS); do launchctl bootout gui/$(UID)/$$j 2>/dev/null && echo "unloaded $$j" || true; done
