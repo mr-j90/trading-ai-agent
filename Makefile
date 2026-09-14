@@ -2,12 +2,19 @@ UID := $(shell id -u)
 JOBS := com.ies.trading-agent com.ies.trading-agent-retry com.ies.trading-agent-guard
 PORT ?= 3210
 
-.PHONY: help dashboard test dry-run guard run status logs install uninstall
+.PHONY: help up down dashboard test dry-run guard run status logs install uninstall
 
 help:  ## list targets
 	@grep -E '^[a-z-]+:.*##' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-10s %s\n", $$1, $$2}'
 
-dashboard:  ## start the Next.js dashboard on $(PORT)
+up: install  ## everything on: load the 3 launchd jobs + dashboard in the background
+	@if [ -f .dashboard.pid ] && kill -0 $$(cat .dashboard.pid) 2>/dev/null; then echo "dashboard already running (pid $$(cat .dashboard.pid))"; \
+	else (cd dashboard && nohup npm run dev -- --port $(PORT) > ../dashboard.log 2>&1 & echo $$! > ../.dashboard.pid); echo "dashboard starting on http://localhost:$(PORT) (log: dashboard.log)"; fi
+
+down: uninstall  ## everything off: unload the jobs + stop the dashboard
+	@if [ -f .dashboard.pid ]; then pkill -P $$(cat .dashboard.pid) 2>/dev/null; kill $$(cat .dashboard.pid) 2>/dev/null; rm -f .dashboard.pid; echo "dashboard stopped"; fi
+
+dashboard:  ## run the dashboard in the foreground on $(PORT)
 	cd dashboard && npm run dev -- --port $(PORT)
 
 test:  ## run the self-checks and type-check the dashboard
