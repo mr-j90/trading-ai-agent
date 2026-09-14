@@ -1,6 +1,7 @@
 """Trading agent. Two entry points, both scheduled by launchd:
 
   main.py           decision cycle, 3x/day (com.ies.trading-agent.plist): asks the model, places orders
+  main.py --retry   10 min after each decision (com.ies.trading-agent-retry.plist): reruns it only if it failed
   main.py --guard   mechanical exits, every 30 min (com.ies.trading-agent-guard.plist): no model call
 
 Decisions locked on the wayfinder map: https://github.com/mr-j90/trading-ai-agent/issues/1
@@ -273,7 +274,7 @@ def cycle(dry_run: bool, summary: bool = True) -> None:
     try:
         clock, account, positions = preflight()
     except Exception as e:  # journal it so the dashboard and summary show the gap
-        append_journal({"ts": datetime.now(UTC).isoformat(), "equity": None, "cash": None, "market_view": "", "placed": [], "rejected": [], "error": f"preflight: {e!r}"})
+        append_journal({"kind": "cycle", "ts": datetime.now(UTC).isoformat(), "equity": None, "cash": None, "market_view": "", "placed": [], "rejected": [], "error": f"preflight: {e!r}"})
         raise
     if account is None:
         print("market closed, next open", clock.next_open)
@@ -285,7 +286,7 @@ def cycle(dry_run: bool, summary: bool = True) -> None:
     today = [e for e in journal if e["ts"][:10] == now.date().isoformat()]
     sod_equity = next((e["equity"] for e in today if e["equity"]), equity)
     buys_blocked = equity < (1 - DAILY_STOP_PCT) * sod_equity
-    entry = {"ts": now.isoformat(), "equity": equity, "cash": cash, "market_view": "", "placed": [], "rejected": [], "error": None}
+    entry = {"kind": "cycle", "ts": now.isoformat(), "equity": equity, "cash": cash, "market_view": "", "placed": [], "rejected": [], "error": None}
     last_close: dict[str, float] = {}
     try:
         market_text, last_close = market_snapshot(now)
@@ -344,7 +345,7 @@ def guard(dry_run: bool) -> None:
         print(f"guard {now:%H:%M}Z: {len(positions)} positions, nothing to do")
         return
     market_value = {p.symbol: float(p.market_value) for p in positions}
-    entry = {"ts": now.isoformat(), "equity": float(account.equity), "cash": float(account.buying_power),
+    entry = {"kind": "guard", "ts": now.isoformat(), "equity": float(account.equity), "cash": float(account.buying_power),
              "market_view": "guard: " + "; ".join(f"{o.symbol} {o.reason}" for o in orders), "placed": [], "rejected": [], "error": None}
     try:
         for o in orders:
@@ -358,10 +359,23 @@ def guard(dry_run: bool) -> None:
         append_journal(entry)
 
 
+def retry_cycle() -> None:
+    """Runs 10 min after each scheduled decision; only acts if that decision left no successful entry."""
+    cutoff = datetime.now(UTC) - timedelta(minutes=20)
+    ok = any(e.get("kind", "cycle") == "cycle" and not e["error"] and datetime.fromisoformat(e["ts"]) >= cutoff for e in read_journal())
+    if ok:
+        print("retry: last decision cycle succeeded, nothing to do")
+        return
+    print("retry: no successful decision cycle in the last 20 min, running one")
+    cycle(dry_run=False)
+
+
 if __name__ == "__main__":
     with LOCK.open("w") as lock:  # a guard and a decision cycle must not overlap
         fcntl.flock(lock, fcntl.LOCK_EX)
         if "--guard" in sys.argv:
             guard(dry_run="--dry-run" in sys.argv)
+        elif "--retry" in sys.argv:
+            retry_cycle()
         else:
             cycle(dry_run="--dry-run" in sys.argv, summary="--no-summary" not in sys.argv)
