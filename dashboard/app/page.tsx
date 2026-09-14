@@ -124,7 +124,7 @@ export default function Page() {
           {s.journal.length === 0 && <p className="muted">no cycles yet</p>}
           {s.journal.map((e) => (
             <article key={e.ts} className="entry">
-              <div className="row"><b>{new Date(e.ts).toLocaleString()}</b><span className="muted">equity {usd(e.equity)}</span></div>
+              <div className="row"><b>{new Date(e.ts).toLocaleString()}</b><span className="muted">{e.equity ? `equity ${usd(e.equity)}` : "run failed before reaching the account"}</span></div>
               {e.error && <div className="down">error: {e.error}</div>}
               <p>{e.market_view || <span className="muted">no view recorded</span>}</p>
               <ul>
