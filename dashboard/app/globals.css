@@ -58,6 +58,7 @@ button:disabled { opacity: 0.5; cursor: default; }
 .badge.live { color: var(--up); border-color: var(--up); }
 .badge.halted { color: var(--down); border-color: var(--down); }
 .badge.ended { color: var(--muted); }
+.badge.leader { margin-left: 8px; color: var(--ink); border-color: var(--warn); background: color-mix(in oklab, var(--warn) 15%, transparent); text-transform: none; letter-spacing: 0; }
 pre { background: color-mix(in oklab, var(--ink) 5%, var(--surface)); padding: 8px 10px; border-radius: 6px; font: inherit; }
 code { font: inherit; color: var(--ink-2); }
 .saw { margin: 8px 0 4px; padding: 10px 12px; border: 1px dashed var(--border); border-radius: 6px; display: flex; flex-direction: column; gap: 8px; }

@@ -69,6 +69,14 @@ export default function Page() {
 
   if (!rows) return <main className="wrap"><p className="muted">{err ?? "loading…"}</p></main>;
   const cur = rows.find((r) => r.name === sel);
+  // leader = best gap to its own benchmark (skill), falling back to raw return before a ledger exists; only among strategies with live equity
+  const score = (r: Row) => {
+    if (r.equity == null) return null;
+    const ret = r.equity / r.contributed - 1;
+    return r.benchmarkValue == null ? ret : ret - (r.benchmarkValue / r.contributed - 1);
+  };
+  const ranked = [...rows].sort((a, b) => (score(b) ?? -Infinity) - (score(a) ?? -Infinity));
+  const leader = ranked.filter((r) => score(r) != null).length >= 2 ? ranked[0].name : null;
   const busy = (name: string) => !!running || !!rows.find((r) => r.name === name)?.halt || !rows.find((r) => r.name === name)?.configured;
 
   return (
@@ -83,7 +91,10 @@ export default function Page() {
       {runOut && <RunOutput r={runOut} onClose={() => setRunOut(null)} />}
 
       <section className="card admin">
-        <div className="row"><div className="label">Strategies</div><span className="muted small">runs until each strategy's end date · click a row for detail</span></div>
+        <div className="row">
+          <div className="label">Strategies {leader && <span className="badge leader">🏆 {leader} leads</span>}</div>
+          <span className="muted small">ranked by gap to own benchmark · click a row for detail</span>
+        </div>
         <div className="scroll">
           <table>
             <thead><tr>
@@ -91,14 +102,14 @@ export default function Page() {
               <th className="r">pos</th><th className="r">cycles</th><th className="r">trades</th><th className="r">guard</th><th className="r">rejected</th><th className="r">errors</th><th className="r">model $</th><th>last run</th><th></th>
             </tr></thead>
             <tbody>
-              {rows.map((r) => {
+              {ranked.map((r) => {
                 const ret = r.equity == null ? null : r.equity / r.contributed - 1;
                 const bench = r.benchmarkValue == null ? null : r.benchmarkValue / r.contributed - 1;
                 const gap = ret == null || bench == null ? null : ret - bench;
                 const status = !r.configured ? "not configured" : r.halt ? "halted" : r.ended ? "ended" : "live";
                 return (
                   <tr key={r.name} className={`${r.name === sel ? "selected" : ""} ${r.configured ? "" : "dim"}`} onClick={() => setSel(r.name)} title={r.description}>
-                    <td><b>{r.name}</b><div className="muted small desc">{r.description}</div></td>
+                    <td><b>{r.name === leader && "🏆 "}{r.name}</b><div className="muted small desc">{r.description}</div></td>
                     <td className="muted">{r.model}</td>
                     <td><span className={`badge ${status.replace(" ", "-")}`}>{status}</span></td>
                     <td className="r">{r.equity == null ? "–" : usd(r.equity)}</td>
