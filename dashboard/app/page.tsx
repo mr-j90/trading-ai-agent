@@ -69,12 +69,8 @@ export default function Page() {
 
   if (!rows) return <main className="wrap"><p className="muted">{err ?? "loading…"}</p></main>;
   const cur = rows.find((r) => r.name === sel);
-  // leader = best gap to its own benchmark (skill), falling back to raw return before a ledger exists; only among strategies with live equity
-  const score = (r: Row) => {
-    if (r.equity == null) return null;
-    const ret = r.equity / r.contributed - 1;
-    return r.benchmarkValue == null ? ret : ret - (r.benchmarkValue / r.contributed - 1);
-  };
+  // leader = best gap to its own benchmark (skill, comparable across asset classes); unranked until a strategy has a benchmark ledger
+  const score = (r: Row) => (r.equity == null || r.benchmarkValue == null ? null : r.equity / r.contributed - 1 - (r.benchmarkValue / r.contributed - 1));
   const ranked = [...rows].sort((a, b) => (score(b) ?? -Infinity) - (score(a) ?? -Infinity));
   const leader = ranked.filter((r) => score(r) != null).length >= 2 ? ranked[0].name : null;
   const busy = (name: string) => !!running || !!rows.find((r) => r.name === name)?.halt || !rows.find((r) => r.name === name)?.configured;

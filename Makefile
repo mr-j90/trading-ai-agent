@@ -42,7 +42,8 @@ logs:  ## follow agent.log
 	tail -f agent.log
 
 install:  ## copy plists to ~/Library/LaunchAgents and (re)load all three jobs
-	@for j in $(JOBS); do cp $$j.plist ~/Library/LaunchAgents/; launchctl bootout gui/$(UID)/$$j 2>/dev/null || true; launchctl bootstrap gui/$(UID) ~/Library/LaunchAgents/$$j.plist && echo "loaded $$j"; done
+	@for j in $(JOBS); do cp $$j.plist ~/Library/LaunchAgents/; launchctl bootout gui/$(UID)/$$j 2>/dev/null || true; sleep 1; \
+	  launchctl bootstrap gui/$(UID) ~/Library/LaunchAgents/$$j.plist 2>/dev/null || (sleep 3; launchctl bootstrap gui/$(UID) ~/Library/LaunchAgents/$$j.plist); echo "loaded $$j"; done
 
 uninstall:  ## unload all three jobs (files stay)
 	@for j in $(JOBS); do launchctl bootout gui/$(UID)/$$j 2>/dev/null && echo "unloaded $$j" || true; done

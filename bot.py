@@ -56,7 +56,7 @@ def pick(arg: str | None):
 
 
 def status(_):
-    rows = []  # (score, line) ; score = gap to own benchmark, or raw return before a ledger exists
+    rows = []  # (score, line) ; score = gap to own benchmark; None (unranked) until the strategy has a ledger
     for S in configured():
         try:
             a = trading(S).get_account()
@@ -65,8 +65,8 @@ def status(_):
             ret = eq / contributed - 1
             n = len(trading(S).get_all_positions())
             state = "HALTED" if (S.dir / "HALT").exists() else "live"
-            score = ret - (bench / contributed - 1) if bench else ret
-            gap = f" · vs bench {score * 100:+.1f} pts" if bench else ""
+            score = ret - (bench / contributed - 1) if bench else None
+            gap = f" · vs bench {score * 100:+.1f} pts" if score is not None else " · no benchmark yet"
             rows.append((score, f"<b>{S.name}</b> {state} · ${eq:.2f} · {eq / last - 1:+.2%} today · {ret:+.2%} on ${contributed:.0f}{gap} · {n} pos"))
         except Exception as e:
             rows.append((None, f"<b>{S.name}</b> error: {esc(repr(e)[:120])}"))
