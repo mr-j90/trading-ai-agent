@@ -2,8 +2,10 @@
 
 import json
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
+
+from watchlist import WATCHLIST
 
 ROOT = Path(__file__).parent
 RUNS = ROOT / "runs"
@@ -14,6 +16,8 @@ class Strategy:
     name: str
     key_env: str  # env prefix: <key_env>_API_KEY / <key_env>_SECRET_KEY for that paper account
     description: str = ""
+    asset_class: str = "us_equity"  # or "crypto": 24/7, GTC orders, crypto data endpoints
+    watchlist: dict[str, list[str]] = field(default_factory=lambda: WATCHLIST)  # sector -> symbols
     model: str = "gpt-5.6-terra"
     reasoning: str = "low"
     style: str = ""  # extra prompt guidance appended to the shared instructions
@@ -38,6 +42,23 @@ class Strategy:
     def keys(self) -> tuple[str, str] | None:
         k, s = os.environ.get(f"{self.key_env}_API_KEY"), os.environ.get(f"{self.key_env}_SECRET_KEY")
         return (k, s) if k and s else None
+
+    @property
+    def symbols(self) -> list[str]:
+        return [s for syms in self.watchlist.values() for s in syms]
+
+    @property
+    def sector_of(self) -> dict[str, str]:
+        return {s: sector for sector, syms in self.watchlist.items() for s in syms}
+
+    @property
+    def crypto(self) -> bool:
+        return self.asset_class == "crypto"
+
+    def canon(self, symbol: str) -> str:
+        """Alpaca returns crypto positions as BTCUSD but quotes them as BTC/USD; map anything back to the watchlist spelling."""
+        flat = symbol.replace("/", "")
+        return next((s for s in self.symbols if s.replace("/", "") == flat), symbol)
 
 
 STRATEGIES: dict[str, Strategy] = {

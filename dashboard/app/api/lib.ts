@@ -6,18 +6,38 @@ export const ROOT = join(process.cwd(), "..");
 export const TRADING = "https://paper-api.alpaca.markets";
 export const DATA = "https://data.alpaca.markets";
 
+import { WATCHLIST } from "../watchlist";
+
 export type StrategyCfg = {
-  name: string; key_env: string; description?: string; model?: string; reasoning?: string; style?: string;
-  start_equity?: number; max_position_pct?: number; max_sector_pct?: number; daily_stop_pct?: number; max_orders?: number;
-  stop_loss_pct?: number; trailing_stop_pct?: number; ends?: string;
+  name: string; key_env: string; description?: string; asset_class: "us_equity" | "crypto"; watchlist: Record<string, string[]>;
+  model: string; reasoning: string; style?: string;
+  start_equity: number; max_position_pct: number; max_sector_pct: number; daily_stop_pct: number; max_orders: number;
+  stop_loss_pct: number; trailing_stop_pct: number; ends: string;
 };
 
 // mirrors the dataclass defaults in ../strategies.py
-export const DEFAULTS = { model: "gpt-5.6-terra", reasoning: "low", start_equity: 500, max_position_pct: 0.2, max_sector_pct: 0.6, daily_stop_pct: 0.03, max_orders: 5, stop_loss_pct: 0.08, trailing_stop_pct: 0.1, ends: "2027-01-01" };
+export const DEFAULTS = { asset_class: "us_equity" as const, watchlist: WATCHLIST, model: "gpt-5.6-terra", reasoning: "low", start_equity: 500, max_position_pct: 0.2, max_sector_pct: 0.6, daily_stop_pct: 0.03, max_orders: 5, stop_loss_pct: 0.08, trailing_stop_pct: 0.1, ends: "2027-01-01" };
 
 export function strategies(): StrategyCfg[] {
-  const raw = JSON.parse(readFileSync(join(ROOT, "strategies.json"), "utf8")) as Record<string, Omit<StrategyCfg, "name">>;
+  const raw = JSON.parse(readFileSync(join(ROOT, "strategies.json"), "utf8")) as Record<string, Partial<StrategyCfg> & { key_env: string }>;
   return Object.entries(raw).map(([name, cfg]) => ({ ...DEFAULTS, name, ...cfg }));
+}
+
+export const symbolsOf = (s: StrategyCfg) => Object.values(s.watchlist).flat();
+export const sectorOf = (s: StrategyCfg) => Object.fromEntries(Object.entries(s.watchlist).flatMap(([sec, syms]) => syms.map((x) => [x, sec])));
+/** Alpaca returns crypto positions as BTCUSD but quotes them as BTC/USD. */
+export const canon = (s: StrategyCfg, symbol: string) => symbolsOf(s).find((x) => x.replace("/", "") === symbol.replace("/", "")) ?? symbol;
+
+/** Latest prices for a strategy's watchlist: { SYM: { price, dayPc } }. One request per asset class. */
+export async function prices(s: StrategyCfg, headers: Record<string, string>): Promise<Record<string, { price: number; dayPc: number | null }>> {
+  const syms = symbolsOf(s).join(",");
+  const raw = s.asset_class === "crypto"
+    ? (await alpaca<{ snapshots: Record<string, any> }>(`${DATA}/v1beta3/crypto/us/snapshots?symbols=${syms}`, headers)).snapshots
+    : await alpaca<Record<string, any>>(`${DATA}/v2/stocks/snapshots?symbols=${syms}&feed=iex`, headers);
+  return Object.fromEntries(symbolsOf(s).map((x) => {
+    const snap = raw[x]; const p = snap?.latestTrade?.p ?? snap?.dailyBar?.c; const prev = snap?.prevDailyBar?.c;
+    return [x, { price: p, dayPc: p && prev ? p / prev - 1 : null }];
+  }));
 }
 
 export function strategy(name: string): StrategyCfg {

@@ -91,8 +91,20 @@ assert led["contributed"] == 700 and led["units"] == {"A": 30.0, "B": 15.0} and 
 led2 = apply_deposit(led, -100, prices1)
 assert led2["contributed"] == 600 and led2["units"] == led["units"] and led["contributed"] == 700
 
+# ---- crypto strategy: own watchlist, single sector at 100%, symbol normalization ----
+X = STRATEGIES["crypto"]
+assert X.crypto and X.symbols == ["BTC/USD", "ETH/USD", "SOL/USD"] and X.canon("BTCUSD") == "BTC/USD" and X.canon("AAPL") == "AAPL"
+# equities are off-limits; 40% cap on 500 = 200; sector cap 100% never binds
+placed, rejected = validate(X, [o("buy", "AAPL", 50), o("buy", "BTC/USD", 200), o("buy", "ETH/USD", 200), o("buy", "SOL/USD", 100)], 500, 500, {}, False)
+assert rejected[0]["symbol"] == "AAPL" and "watchlist" in rejected[0]["why"]
+assert [p.symbol for p in placed] == ["BTC/USD", "ETH/USD", "SOL/USD"]
+# guard sees positions as BTCUSD and reports them as BTC/USD; 12% stop
+orders, peaks = guard_orders(X, [pos("BTCUSD", 80000, 70000, 0.002)], 500, {})
+assert orders[0].symbol == "BTC/USD" and "stop-loss" in orders[0].reason and peaks == {"BTC/USD": 80000}
+assert guard_orders(X, [pos("BTCUSD", 80000, 71000, 0.002)], 500, {})[0] == []
+
 # ---- strategies.json shape ----
-assert set(STRATEGIES) >= {"main", "luna", "momentum", "cautious"}
+assert set(STRATEGIES) >= {"main", "luna", "momentum", "cautious", "crypto"}
 assert all(isinstance(s, Strategy) and s.ends > "2026-09-14" for s in STRATEGIES.values())
 assert STRATEGIES["main"].keys is not None, "main strategy must have ALPACA_API_KEY / ALPACA_SECRET_KEY"
 

@@ -12,8 +12,11 @@ An LLM-driven paper-trading agent on Alpaca. A model (OpenAI) decides trades thr
 | `luna` | same rules on the cheap model | `ALPACA_LUNA_API_KEY`, `ALPACA_LUNA_SECRET_KEY` |
 | `momentum` | concentrated relative strength, 25% cap, 3 orders/cycle | `ALPACA_MOMENTUM_*` |
 | `cautious` | 15% cap, 50% sector cap, tighter stops, medium reasoning | `ALPACA_CAUTIOUS_*` |
+| `crypto` | BTC/ETH/SOL, 40% cap, wider stops, GTC orders, 24/7 | `ALPACA_CRYPTO_*` |
 
 To add one: create a paper account in the Alpaca dashboard, reset it to $500, add its two keys to `.env`, add an entry to `strategies.json`. Strategies without keys show as "not configured" and are skipped. Every scheduled job runs `main.py --all`, so a new strategy starts at the next cycle with no reload.
+
+A strategy may set `asset_class: "crypto"` and its own `watchlist`. Crypto strategies skip the market-clock gate, use GTC orders, pull bars from Alpaca's crypto endpoint, and treat the 15:30 ET run as the day's last. Decision cycles still follow the weekday schedule; guards run every 30 minutes all week, so stops are enforced on weekends too.
 
 ## Setup
 

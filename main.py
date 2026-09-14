@@ -18,9 +18,10 @@ import time as time_module
 import urllib.request
 from datetime import date, datetime, time, timedelta, timezone
 from typing import Literal
+from zoneinfo import ZoneInfo
 
-from alpaca.data.historical import NewsClient, StockHistoricalDataClient
-from alpaca.data.requests import NewsRequest, StockBarsRequest
+from alpaca.data.historical import CryptoHistoricalDataClient, NewsClient, StockHistoricalDataClient
+from alpaca.data.requests import CryptoBarsRequest, NewsRequest, StockBarsRequest
 from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
 from alpaca.trading.client import TradingClient
 from alpaca.trading.enums import OrderSide, TimeInForce
@@ -30,11 +31,11 @@ from openai import OpenAI
 from pydantic import BaseModel
 
 from strategies import STRATEGIES, Strategy
-from watchlist import SECTOR_OF
 
 load_dotenv()
-# market data is account-agnostic: one data client on the main keys serves every strategy
+# market data is account-agnostic: data clients on the main keys serve every strategy
 data = StockHistoricalDataClient(os.environ["ALPACA_API_KEY"], os.environ["ALPACA_SECRET_KEY"])
+crypto_data = CryptoHistoricalDataClient(os.environ["ALPACA_API_KEY"], os.environ["ALPACA_SECRET_KEY"])
 news = NewsClient(os.environ["ALPACA_API_KEY"], os.environ["ALPACA_SECRET_KEY"])
 llm = OpenAI()
 _clients: dict[str, TradingClient] = {}
@@ -48,12 +49,13 @@ def trading(S: Strategy) -> TradingClient:
 
 
 SUMMARY_WINDOW = timedelta(minutes=90)
-SYMBOLS = list(SECTOR_OF)
+SUMMARY_HOUR_ET = 15  # 24/7 strategies: the run at/after this ET hour is the day's last
 UTC = timezone.utc
+ET = ZoneInfo("America/New_York")
 
 
 class Order(BaseModel):
-    symbol: Literal[*SYMBOLS]
+    symbol: str  # validated against the strategy's watchlist in validate()
     side: Literal["buy", "sell"]
     notional_usd: float
     reason: str
@@ -65,8 +67,9 @@ class Decision(BaseModel):
 
 
 def instructions(S: Strategy) -> str:
-    return f"""You manage a small long-only US equities paper account, starting equity ${S.start_equity:.0f}.
-You may only trade the watchlist symbols given. Orders are dollar-sized market orders that fill immediately.
+    what = "crypto" if S.crypto else "US equities"
+    return f"""You manage a small long-only {what} paper account, starting equity ${S.start_equity:.0f}.
+You may only trade the watchlist symbols given, spelled exactly as given. Orders are dollar-sized market orders that fill immediately.
 Hard limits enforced by code (orders that break them are dropped and shown to you next cycle):
 - max {S.max_position_pct:.0%} of equity in any one symbol and {S.max_sector_pct:.0%} in any one sector; buys limited to available cash
 - no buys after equity falls {S.daily_stop_pct:.0%} below start-of-day; sells always allowed
@@ -94,28 +97,33 @@ def append_journal(S: Strategy, entry: dict) -> None:
 
 
 # ---------- market data ----------
-def market_snapshot(now: datetime) -> tuple[str, dict[str, float]]:
-    daily = data.get_stock_bars(
-        StockBarsRequest(symbol_or_symbols=SYMBOLS, timeframe=TimeFrame.Day, start=now - timedelta(days=45))
-    ).data
-    today_start = datetime.combine(now.date(), time(13, 0), tzinfo=UTC)
-    intra = data.get_stock_bars(
-        StockBarsRequest(symbol_or_symbols=SYMBOLS, timeframe=TimeFrame(30, TimeFrameUnit.Minute), start=today_start)
-    ).data
+def bars(S: Strategy, timeframe: TimeFrame, start: datetime) -> dict:
+    if S.crypto:
+        return crypto_data.get_crypto_bars(CryptoBarsRequest(symbol_or_symbols=S.symbols, timeframe=timeframe, start=start)).data
+    return data.get_stock_bars(StockBarsRequest(symbol_or_symbols=S.symbols, timeframe=timeframe, start=start)).data
+
+
+def market_snapshot(S: Strategy, now: datetime) -> tuple[str, dict[str, float]]:
+    daily = bars(S, TimeFrame.Day, now - timedelta(days=45))
+    # equities: today's session from ~9am ET; crypto never closes, so show the last 12 hours
+    today_start = now - timedelta(hours=12) if S.crypto else datetime.combine(now.date(), time(13, 0), tzinfo=UTC)
+    intra = bars(S, TimeFrame(30, TimeFrameUnit.Minute), today_start)
     lines, last_close = [], {}
-    for s in SYMBOLS:
+    sector_of = S.sector_of
+    for s in S.symbols:
         d = [round(b.close, 2) for b in daily.get(s, [])][-20:]
         i = [round(b.close, 2) for b in intra.get(s, [])]
         if d:
             last_close[s] = i[-1] if i else d[-1]
-        lines.append(f"{s} [{SECTOR_OF[s]}] daily closes: {d} | today 30m: {i}")
+        lines.append(f"{s} [{sector_of[s]}] daily closes: {d} | {'last 12h' if S.crypto else 'today'} 30m: {i}")
     return "\n".join(lines), last_close
 
 
-def headlines(now: datetime) -> list[str]:
-    ns = news.get_news(NewsRequest(symbols=",".join(SYMBOLS), start=now - timedelta(hours=24), limit=50))
+def headlines(S: Strategy, now: datetime) -> list[str]:
+    ns = news.get_news(NewsRequest(symbols=",".join(S.symbols), start=now - timedelta(hours=24), limit=50))
     items = [n for v in (ns.data.values() if isinstance(ns.data, dict) else [ns.data]) for n in v]
-    return [f"{n.created_at:%H:%M} {','.join(sym for sym in n.symbols if sym in SECTOR_OF)}: {n.headline}" for n in items]
+    known = {s.replace("/", "") for s in S.symbols}
+    return [f"{n.created_at:%H:%M} {','.join(sym for sym in n.symbols if sym.replace('/', '') in known)}: {n.headline}" for n in items]
 
 
 # ---------- risk ----------
@@ -123,11 +131,14 @@ def validate(S: Strategy, orders: list[Order], cash: float, equity: float, marke
     """Pure. Returns (placed, rejected). market_value is copied, not mutated."""
     mv = dict(market_value)
     cap, sector_cap = S.max_position_pct * equity, S.max_sector_pct * equity
-    sector_mv = lambda sector: sum(v for s, v in mv.items() if SECTOR_OF.get(s) == sector)
+    sector_of = S.sector_of
+    sector_mv = lambda sector: sum(v for s, v in mv.items() if sector_of.get(s) == sector)
     placed, rejected = [], []
     for o in orders:
         why = None
-        if len(placed) >= S.max_orders:
+        if o.symbol not in sector_of:
+            why = "not on this strategy's watchlist"
+        elif len(placed) >= S.max_orders:
             why = f"max {S.max_orders} orders per cycle"
         elif o.notional_usd < 1:
             why = "below $1 minimum"
@@ -138,8 +149,8 @@ def validate(S: Strategy, orders: list[Order], cash: float, equity: float, marke
                 why = f"exceeds available cash ${cash:.2f}"
             elif mv.get(o.symbol, 0) + o.notional_usd > cap:
                 why = f"would exceed position cap ${cap:.2f}"
-            elif sector_mv(SECTOR_OF[o.symbol]) + o.notional_usd > sector_cap:
-                why = f"would exceed {SECTOR_OF[o.symbol]} sector cap ${sector_cap:.2f}"
+            elif sector_mv(sector_of[o.symbol]) + o.notional_usd > sector_cap:
+                why = f"would exceed {sector_of[o.symbol]} sector cap ${sector_cap:.2f}"
         elif o.notional_usd > mv.get(o.symbol, 0):
             why = f"exceeds held market value ${mv.get(o.symbol, 0):.2f}"
         if why:
@@ -159,23 +170,25 @@ def guard_orders(S: Strategy, positions, equity: float, peaks: dict[str, float])
     cap = S.max_position_pct * equity
     orders, new_peaks = [], {}
     for p in positions:
+        sym = S.canon(p.symbol)
         price, entry, mv = float(p.current_price), float(p.avg_entry_price), float(p.market_value)
-        peak = max(peaks.get(p.symbol, entry), price)
-        new_peaks[p.symbol] = peak
+        peak = max(peaks.get(sym, entry), price)
+        new_peaks[sym] = peak
         if price <= entry * (1 - S.stop_loss_pct):
-            orders.append(Order(symbol=p.symbol, side="sell", notional_usd=mv, reason=f"stop-loss: {price / entry - 1:.1%} from entry {entry:.2f}"))
+            orders.append(Order(symbol=sym, side="sell", notional_usd=mv, reason=f"stop-loss: {price / entry - 1:.1%} from entry {entry:.2f}"))
         elif price <= peak * (1 - S.trailing_stop_pct):
-            orders.append(Order(symbol=p.symbol, side="sell", notional_usd=mv, reason=f"trailing stop: {price / peak - 1:.1%} from peak {peak:.2f}"))
+            orders.append(Order(symbol=sym, side="sell", notional_usd=mv, reason=f"trailing stop: {price / peak - 1:.1%} from peak {peak:.2f}"))
         elif mv - cap >= 1:
-            orders.append(Order(symbol=p.symbol, side="sell", notional_usd=round(mv - cap, 2), reason=f"trim to {S.max_position_pct:.0%} cap (${cap:.0f})"))
+            orders.append(Order(symbol=sym, side="sell", notional_usd=round(mv - cap, 2), reason=f"trim to {S.max_position_pct:.0%} cap (${cap:.0f})"))
     return orders, new_peaks
 
 
 def submit(S: Strategy, o: Order, market_value: dict[str, float]):
     if o.side == "sell" and o.notional_usd >= 0.98 * market_value.get(o.symbol, 0):
-        return trading(S).close_position(o.symbol)  # avoid a fractional crumb
+        return trading(S).close_position(o.symbol.replace("/", ""))  # avoid a fractional crumb; positions API wants BTCUSD
+    tif = TimeInForce.GTC if S.crypto else TimeInForce.DAY  # Alpaca crypto accepts only gtc/ioc
     return trading(S).submit_order(
-        MarketOrderRequest(symbol=o.symbol, notional=round(o.notional_usd, 2), side=OrderSide(o.side), time_in_force=TimeInForce.DAY)
+        MarketOrderRequest(symbol=o.symbol, notional=round(o.notional_usd, 2), side=OrderSide(o.side), time_in_force=tif)
     )
 
 
@@ -253,10 +266,11 @@ def daily_summary(S: Strategy, equity: float, cash: float, positions, today: lis
     lines += [f"• {o['side']} ${o['notional_usd']:.0f} {o['symbol']}: {esc(o['reason'])}" for o in placed]
     lines += [f"• ✗ {o['side']} ${o['notional_usd']:.0f} {o['symbol']}: {esc(o['why'])}" for o in rejected]
     lines.append("\n<b>Positions</b>")
-    for sector in ("tech", "blue_collar"):
-        ps = [p for p in positions if SECTOR_OF.get(p.symbol) == sector]
+    sector_of = S.sector_of
+    for sector in S.watchlist:
+        ps = [p for p in positions if sector_of.get(S.canon(p.symbol)) == sector]
         if ps:
-            lines.append(f"<i>{sector}</i>: " + ", ".join(f"{p.symbol} ${float(p.market_value):.0f} ({float(p.unrealized_plpc):+.1%})" for p in ps))
+            lines.append(f"<i>{sector}</i>: " + ", ".join(f"{S.canon(p.symbol)} ${float(p.market_value):.0f} ({float(p.unrealized_plpc):+.1%})" for p in ps))
     lines.append("\n<b>Market view</b>")
     lines += [f"• {e['ts'][11:16]}Z {esc(e['market_view'])}" for e in today if e["market_view"]]
     errors = [e["error"] for e in today if e.get("error")]
@@ -281,9 +295,15 @@ def retry(fn, attempts: int = 4, wait: float = 15.0):
 def preflight(S: Strategy):
     t = trading(S)
     clock = retry(t.get_clock)
-    if not clock.is_open:
+    if not clock.is_open and not S.crypto:  # crypto never closes
         return clock, None, None
     return clock, retry(t.get_account), retry(t.get_all_positions)
+
+
+def is_last_run_of_day(S: Strategy, clock, now: datetime) -> bool:
+    if S.crypto:
+        return now.astimezone(ET).hour >= SUMMARY_HOUR_ET
+    return clock.next_close - now <= SUMMARY_WINDOW
 
 
 def skip_reason(S: Strategy) -> str | None:
@@ -307,7 +327,7 @@ def cycle(S: Strategy, dry_run: bool, summary: bool = True) -> None:
         return
     now = datetime.now(UTC)
     equity, cash = float(account.equity), float(account.buying_power)
-    market_value = {p.symbol: float(p.market_value) for p in positions}
+    market_value = {S.canon(p.symbol): float(p.market_value) for p in positions}
     journal = read_journal(S)
     today = [e for e in journal if e["ts"][:10] == now.date().isoformat()]
     sod_equity = next((e["equity"] for e in today if e["equity"]), equity)
@@ -315,21 +335,22 @@ def cycle(S: Strategy, dry_run: bool, summary: bool = True) -> None:
     entry = {"kind": "cycle", "ts": now.isoformat(), "equity": equity, "cash": cash, "market_view": "", "placed": [], "rejected": [], "error": None}
     last_close: dict[str, float] = {}
     try:
-        market_text, last_close = market_snapshot(now)
+        market_text, last_close = market_snapshot(S, now)
         state = {
             "now_utc": now.isoformat(),
-            "minutes_to_close": int((clock.next_close - now).total_seconds() // 60),
+            "market_hours": "24/7" if S.crypto else f"{int((clock.next_close - now).total_seconds() // 60)} minutes to close",
+            "watchlist": S.watchlist,
             "equity": equity,
             "cash": cash,
             "start_of_day_equity": sod_equity,
             "buys_blocked": buys_blocked,
             "positions": [
-                {"symbol": p.symbol, "qty": p.qty, "market_value": p.market_value, "avg_entry": p.avg_entry_price, "unrealized_pl": p.unrealized_pl}
+                {"symbol": S.canon(p.symbol), "qty": p.qty, "market_value": p.market_value, "avg_entry": p.avg_entry_price, "unrealized_pl": p.unrealized_pl}
                 for p in positions
             ],
             "recent_journal": [{k: e[k] for k in ("ts", "market_view", "placed", "rejected")} for e in journal[-5:]],
             "market": market_text,
-            "news_24h": headlines(now),
+            "news_24h": headlines(S, now),
         }
         resp = llm.responses.parse(
             model=S.model, reasoning={"effort": S.reasoning}, instructions=instructions(S), input=json.dumps(state, default=str), text_format=Decision
@@ -347,7 +368,7 @@ def cycle(S: Strategy, dry_run: bool, summary: bool = True) -> None:
     if dry_run:
         return
     append_journal(S, entry)
-    if summary and clock.next_close - now <= SUMMARY_WINDOW:
+    if summary and is_last_run_of_day(S, clock, now):
         ledger = sync_ledger(S, last_close) if last_close else None
         contributed = ledger["contributed"] if ledger else S.start_equity
         bench_value = benchmark_value(ledger, last_close) if ledger else None
@@ -372,7 +393,7 @@ def guard(S: Strategy, dry_run: bool) -> None:
     if not orders:
         print(f"guard {now:%H:%M}Z: {len(positions)} positions, nothing to do")
         return
-    market_value = {p.symbol: float(p.market_value) for p in positions}
+    market_value = {S.canon(p.symbol): float(p.market_value) for p in positions}
     entry = {"kind": "guard", "ts": now.isoformat(), "equity": float(account.equity), "cash": float(account.buying_power),
              "market_view": "guard: " + "; ".join(f"{o.symbol} {o.reason}" for o in orders), "placed": [], "rejected": [], "error": None}
     try:

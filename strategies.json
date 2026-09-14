@@ -24,5 +24,18 @@
     "reasoning": "medium",
     "style": "Style: capital preservation first. Prefer cash over marginal ideas; only buy when both the daily trend and the news flow support it. Never hold more than 70% invested.",
     "description": "Defensive: 15% cap, 50% sector cap, tighter stops, medium reasoning."
+  },
+  "crypto": {
+    "key_env": "ALPACA_CRYPTO",
+    "asset_class": "crypto",
+    "watchlist": { "crypto": ["BTC/USD", "ETH/USD", "SOL/USD"] },
+    "max_position_pct": 0.40,
+    "max_sector_pct": 1.0,
+    "max_orders": 3,
+    "stop_loss_pct": 0.12,
+    "trailing_stop_pct": 0.15,
+    "daily_stop_pct": 0.05,
+    "style": "Style: this is crypto, which trades 24/7 and moves 3-5x more than equities. Size for that: a full position is rare. Weekend and overnight moves happen while you are not running, so prefer positions you would be comfortable holding through a 10% gap.",
+    "description": "BTC/ETH/SOL on the same engine: 40% cap, wider stops, GTC orders, runs 24/7."
   }
 }
