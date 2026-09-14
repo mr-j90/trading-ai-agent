@@ -37,6 +37,7 @@ llm = OpenAI()
 MODEL = "gpt-5.6-terra"
 START_EQUITY = 500.0
 MAX_POSITION_PCT = 0.20
+MAX_SECTOR_PCT = 0.60
 DAILY_STOP_PCT = 0.03
 MAX_ORDERS = 5
 STOP_LOSS_PCT = 0.08  # from entry
@@ -70,7 +71,7 @@ class Decision(BaseModel):
 INSTRUCTIONS = f"""You manage a small long-only US equities paper account, starting equity ${START_EQUITY:.0f}.
 You may only trade the watchlist symbols given. Orders are dollar-sized market orders that fill immediately.
 Hard limits enforced by code (orders that break them are dropped and shown to you next cycle):
-- max {MAX_POSITION_PCT:.0%} of equity in any one symbol; buys limited to available cash
+- max {MAX_POSITION_PCT:.0%} of equity in any one symbol and {MAX_SECTOR_PCT:.0%} in any one sector; buys limited to available cash
 - no buys after equity falls {DAILY_STOP_PCT:.0%} below start-of-day; sells always allowed
 - at most {MAX_ORDERS} orders per cycle; sell notional cannot exceed the position's market value
 Code also runs mechanical exits every 30 minutes without you: sell a position {STOP_LOSS_PCT:.0%} below entry,
@@ -122,7 +123,8 @@ def headlines(now: datetime) -> list[str]:
 def validate(orders: list[Order], cash: float, equity: float, market_value: dict[str, float], buys_blocked: bool):
     """Pure. Returns (placed, rejected). market_value is copied, not mutated."""
     mv = dict(market_value)
-    cap = MAX_POSITION_PCT * equity
+    cap, sector_cap = MAX_POSITION_PCT * equity, MAX_SECTOR_PCT * equity
+    sector_mv = lambda sector: sum(v for s, v in mv.items() if SECTOR_OF.get(s) == sector)
     placed, rejected = [], []
     for o in orders:
         why = None
@@ -137,6 +139,8 @@ def validate(orders: list[Order], cash: float, equity: float, market_value: dict
                 why = f"exceeds available cash ${cash:.2f}"
             elif mv.get(o.symbol, 0) + o.notional_usd > cap:
                 why = f"would exceed position cap ${cap:.2f}"
+            elif sector_mv(SECTOR_OF[o.symbol]) + o.notional_usd > sector_cap:
+                why = f"would exceed {SECTOR_OF[o.symbol]} sector cap ${sector_cap:.2f}"
         elif o.notional_usd > mv.get(o.symbol, 0):
             why = f"exceeds held market value ${mv.get(o.symbol, 0):.2f}"
         if why:

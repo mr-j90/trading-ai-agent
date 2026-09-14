@@ -38,6 +38,11 @@ assert len(placed) == MAX_ORDERS and len(rejected) == 2
 placed, rejected = validate([o("buy", "AAPL", 0.5)], cash, equity, held, False)
 assert rejected and held == {"IESC": 150.0, "NVDA": 50.0}
 
+# sector cap: 60% of 500 = 300. tech holds NVDA 50; +100 AAPL, +100 MSFT fit (250), +100 META breaks it, blue collar unaffected
+placed, rejected = validate([o("buy", "AAPL", 100), o("buy", "MSFT", 100), o("buy", "META", 100), o("buy", "PWR", 100)], 500, equity, held, False)
+assert [p.symbol for p in placed] == ["AAPL", "MSFT", "PWR"]
+assert rejected[0]["symbol"] == "META" and "tech sector cap" in rejected[0]["why"]
+
 # ---- guard: mechanical exits ----
 def pos(sym, entry, price, qty=1.0):
     return P(symbol=sym, avg_entry_price=str(entry), current_price=str(price), market_value=str(price * qty), qty=str(qty))

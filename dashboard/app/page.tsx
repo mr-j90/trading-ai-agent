@@ -66,6 +66,7 @@ export default function Page() {
             <dt>last error</dt><dd className={s.lastError ? "down" : ""}>{s.lastError ?? "none"}</dd>
             <dt>decisions</dt><dd>09:45 · 12:30 · 15:30 ET</dd>
             <dt>guards</dt><dd>every 30 min · −8% stop · −10% trailing · trim to 20%</dd>
+            <dt>caps</dt><dd>20% per symbol · 60% per sector</dd>
           </dl>
           <div className="label" style={{ marginTop: 16 }}>Watchlist · day change</div>
           <div className="heat">
