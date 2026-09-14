@@ -66,6 +66,7 @@ export async function GET(req: Request) {
         symbol: sym,
         sector: sectors[sym] ?? "other",
         qty: +p.qty,
+        avgEntry: +p.avg_entry_price,
         marketValue: +p.market_value,
         price: +p.current_price,
         unrealizedPl: +p.unrealized_pl,

@@ -1,7 +1,7 @@
 "use client";
 import { useEffect, useState } from "react";
 
-type Position = { symbol: string; sector: string; qty: number; marketValue: number; price: number; unrealizedPl: number; unrealizedPlpc: number; dayChangePc: number };
+type Position = { symbol: string; sector: string; qty: number; avgEntry: number; marketValue: number; price: number; unrealizedPl: number; unrealizedPlpc: number; dayChangePc: number };
 type Entry = { ts: string; kind?: string; equity: number; market_view: string; placed: any[]; rejected: any[]; error: string | null; tokens_in?: number; tokens_out?: number; cost_usd?: number };
 type StrategyCfg = { name: string; description?: string; model: string; reasoning: string; max_position_pct: number; max_sector_pct: number; daily_stop_pct: number; max_orders: number; stop_loss_pct: number; trailing_stop_pct: number; ends: string; key_env: string };
 type State = {
@@ -170,18 +170,24 @@ function Detail({ s, sel }: { s: State; sel: string }) {
           </div>
         </div>
 
-        <div className="card">
-          <div className="label">Positions</div>
+        <div className="card wide">
+          <div className="row"><div className="label">Positions</div><span className="muted small">{s.positions.length} held · {usd(s.positions.reduce((n, p) => n + p.marketValue, 0))} invested · {usd(s.cash)} cash</span></div>
           {s.positions.length === 0 ? <p className="muted">all cash</p> : (
             <div className="scroll"><table>
-              <thead><tr><th>symbol</th><th>sector</th><th className="r">value</th><th className="r">price</th><th className="r">today</th><th className="r">unrealized</th></tr></thead>
+              <thead><tr>
+                <th>symbol</th><th>sector</th><th className="r">qty</th><th className="r">avg entry</th><th className="r">price</th><th className="r">value</th><th className="r">weight</th><th className="r">today</th><th className="r">unrealized $</th><th className="r">unrealized %</th>
+              </tr></thead>
               <tbody>
                 {s.positions.map((p) => (
                   <tr key={p.symbol}>
                     <td><b>{p.symbol}</b></td><td className="muted">{p.sector}</td>
-                    <td className="r">{usd(p.marketValue)}</td><td className="r">{usd(p.price)}</td>
+                    <td className="r muted">{p.qty.toLocaleString(undefined, { maximumFractionDigits: 6 })}</td>
+                    <td className="r">{usd(p.avgEntry)}</td><td className="r">{usd(p.price)}</td>
+                    <td className="r">{usd(p.marketValue)}</td>
+                    <td className="r muted">{pct(p.marketValue / s.equity, 1).replace("+", "")}</td>
                     <td className={`r ${tone(p.dayChangePc)}`}>{pct(p.dayChangePc)}</td>
-                    <td className={`r ${tone(p.unrealizedPl)}`}>{usd(p.unrealizedPl)} · {pct(p.unrealizedPlpc, 1)}</td>
+                    <td className={`r ${tone(p.unrealizedPl)}`}>{usd(p.unrealizedPl)}</td>
+                    <td className={`r ${tone(p.unrealizedPlpc)}`}>{pct(p.unrealizedPlpc)}</td>
                   </tr>
                 ))}
               </tbody>

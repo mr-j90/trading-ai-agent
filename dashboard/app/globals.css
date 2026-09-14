@@ -57,7 +57,8 @@ a { color: var(--series-1); }
 .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 12px; }
 .card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 14px 16px; min-width: 0; }
 .hero { grid-column: 1 / -1; }
-@media (min-width: 1100px) { .hero { grid-column: span 2; } .log { grid-column: 1 / -1; } }
+.wide, .log { grid-column: 1 / -1; }
+@media (min-width: 1100px) { .hero { grid-column: span 2; } }
 .label { color: var(--muted); text-transform: uppercase; letter-spacing: 0.08em; font-size: 11px; margin-bottom: 6px; }
 .big { font-size: 48px; font-weight: 700; letter-spacing: -0.02em; line-height: 1.1; margin: 2px 0 10px; }
 .row { display: flex; gap: 20px; flex-wrap: wrap; align-items: baseline; justify-content: space-between; }
