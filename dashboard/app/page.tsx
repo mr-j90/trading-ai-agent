@@ -173,7 +173,7 @@ function Detail({ s, sel }: { s: State; sel: string }) {
         <div className="card">
           <div className="label">Positions</div>
           {s.positions.length === 0 ? <p className="muted">all cash</p> : (
-            <table>
+            <div className="scroll"><table>
               <thead><tr><th>symbol</th><th>sector</th><th className="r">value</th><th className="r">price</th><th className="r">today</th><th className="r">unrealized</th></tr></thead>
               <tbody>
                 {s.positions.map((p) => (
@@ -185,7 +185,7 @@ function Detail({ s, sel }: { s: State; sel: string }) {
                   </tr>
                 ))}
               </tbody>
-            </table>
+            </table></div>
           )}
         </div>
 

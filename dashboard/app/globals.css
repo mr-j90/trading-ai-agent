@@ -29,7 +29,8 @@ button:disabled { opacity: 0.5; cursor: default; }
 .runout summary { cursor: pointer; }
 .runout button { padding: 0 8px; line-height: 1.4; }
 .admin { margin-bottom: 12px; }
-.admin .scroll { overflow-x: auto; }
+.scroll { overflow-x: auto; max-width: 100%; }
+.card { overflow: hidden; }
 .admin tbody tr { cursor: pointer; }
 .admin tbody tr:hover { background: color-mix(in oklab, var(--series-1) 6%, transparent); }
 .admin tr.selected { background: color-mix(in oklab, var(--series-1) 12%, transparent); box-shadow: inset 3px 0 0 var(--series-1); }
