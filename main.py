@@ -11,6 +11,7 @@ import html
 import json
 import os
 import sys
+import time as time_module
 import urllib.request
 from datetime import datetime, time, timedelta, timezone
 from pathlib import Path
@@ -203,7 +204,15 @@ def notify(text: str) -> None:
     for i in range(0, len(text), 4000):  # Telegram caps a message at 4096 chars
         body = json.dumps({"chat_id": chat, "text": text[i : i + 4000], "parse_mode": "HTML", "disable_web_page_preview": True}).encode()
         req = urllib.request.Request(f"https://api.telegram.org/bot{token}/sendMessage", body, {"Content-Type": "application/json"})
-        urllib.request.urlopen(req, timeout=10)
+        for attempt in range(3):  # seen: transient TLS resets from api.telegram.org
+            try:
+                urllib.request.urlopen(req, timeout=10)
+                break
+            except OSError as e:
+                if attempt == 2:
+                    print("telegram send failed:", e, "\n" + text)
+                    return
+                time_module.sleep(2)
 
 
 def halt(reason: str) -> None:
