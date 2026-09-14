@@ -9,4 +9,3 @@ agent.log
 peaks.json
 .lock
 dashboard.log
-.dashboard.pid

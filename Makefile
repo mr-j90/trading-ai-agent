@@ -8,11 +8,11 @@ help:  ## list targets
 	@grep -E '^[a-z-]+:.*##' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-10s %s\n", $$1, $$2}'
 
 up: install  ## everything on: load the 3 launchd jobs + dashboard in the background
-	@if [ -f .dashboard.pid ] && kill -0 $$(cat .dashboard.pid) 2>/dev/null; then echo "dashboard already running (pid $$(cat .dashboard.pid))"; \
-	else (cd dashboard && nohup npm run dev -- --port $(PORT) > ../dashboard.log 2>&1 & echo $$! > ../.dashboard.pid); echo "dashboard starting on http://localhost:$(PORT) (log: dashboard.log)"; fi
+	@if lsof -ti tcp:$(PORT) >/dev/null; then echo "dashboard already running on http://localhost:$(PORT)"; \
+	else (cd dashboard && nohup npm run dev -- --port $(PORT) > ../dashboard.log 2>&1 &); echo "dashboard starting on http://localhost:$(PORT) (log: dashboard.log)"; fi
 
 down: uninstall  ## everything off: unload the jobs + stop the dashboard
-	@if [ -f .dashboard.pid ]; then pkill -P $$(cat .dashboard.pid) 2>/dev/null; kill $$(cat .dashboard.pid) 2>/dev/null; rm -f .dashboard.pid; echo "dashboard stopped"; fi
+	@pids=$$(lsof -ti tcp:$(PORT)); if [ -n "$$pids" ]; then for p in $$pids; do kill $$(ps -o ppid= -p $$p) $$p 2>/dev/null; done; echo "dashboard stopped"; else echo "dashboard not running"; fi
 
 dashboard:  ## run the dashboard in the foreground on $(PORT)
 	cd dashboard && npm run dev -- --port $(PORT)
