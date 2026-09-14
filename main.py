@@ -288,6 +288,26 @@ def notify(text: str) -> None:
                 time_module.sleep(2)
 
 
+def notify_entry(S: Strategy, entry: dict) -> None:
+    """One short Telegram line per action so the phone shows what the agent did without the dashboard."""
+    when = datetime.fromisoformat(entry["ts"]).astimezone(ET).strftime("%H:%M ET")
+    head = f"<b>[{S.name}]</b> {when}"
+    if entry.get("error"):
+        notify(f"⚠️ {head} · {'guard' if entry.get('kind') == 'guard' else 'cycle'} error\n<code>{esc(str(entry['error'])[:300])}</code>")
+        return
+    eq = f"equity ${entry['equity']:.2f}" if entry.get("equity") else ""
+    lines = [f"{'🛡' if entry.get('kind') == 'guard' else '▶'} {head} · {eq}"]
+    lines += [f"• {o['side']} ${o['notional_usd']:.0f} {o['symbol']} — {esc(o['reason'][:140])}" for o in entry["placed"]]
+    if entry["rejected"]:
+        lines.append(f"• ✗ {len(entry['rejected'])} rejected: " + ", ".join(f"{o['symbol']} ({esc(o['why'][:40])})" for o in entry["rejected"][:3]))
+    if entry.get("kind") != "guard":
+        if not entry["placed"]:
+            lines[0] += " · held"
+        if entry.get("market_view"):
+            lines.append(f"<i>{esc(entry['market_view'][:280])}</i>")
+    notify("\n".join(lines))
+
+
 def halt(S: Strategy, reason: str) -> None:
     (S.dir / "HALT").write_text(reason)
     notify(f"⛔ <b>[{S.name}] halted:</b> {esc(reason)}")
@@ -365,7 +385,9 @@ def cycle(S: Strategy, dry_run: bool, summary: bool = True) -> None:
     try:
         clock, account, positions = preflight(S)
     except Exception as e:  # journal it so the dashboard and summary show the gap
-        append_journal(S, {"kind": "cycle", "ts": datetime.now(UTC).isoformat(), "equity": None, "cash": None, "market_view": "", "placed": [], "rejected": [], "error": f"preflight: {e!r}"})
+        failed = {"kind": "cycle", "ts": datetime.now(UTC).isoformat(), "equity": None, "cash": None, "market_view": "", "placed": [], "rejected": [], "error": f"preflight: {e!r}"}
+        append_journal(S, failed)
+        notify_entry(S, failed)
         raise
     if account is None:
         print("market closed, next open", clock.next_open)
@@ -422,6 +444,7 @@ def cycle(S: Strategy, dry_run: bool, summary: bool = True) -> None:
     if dry_run:
         return
     append_journal(S, entry)
+    notify_entry(S, entry)
     if summary and is_last_run_of_day(S, clock, now):
         ledger = sync_ledger(S, last_close) if last_close else None
         contributed = ledger["contributed"] if ledger else S.start_equity
@@ -460,6 +483,7 @@ def guard(S: Strategy, dry_run: bool) -> None:
     print(json.dumps(entry, indent=1, default=str))
     if not dry_run:
         append_journal(S, entry)
+        notify_entry(S, entry)
 
 
 def retry_cycle(S: Strategy) -> None:
@@ -502,4 +526,9 @@ if __name__ == "__main__":
         except Exception as e:  # one strategy's failure must not stop the others
             failures += 1
             print(f"!! {S.name} failed: {e!r}")
+            if "--dry-run" not in argv and not isinstance(e, KeyboardInterrupt):
+                try:
+                    notify(f"⚠️ <b>[{S.name}]</b> run failed: <code>{esc(repr(e)[:300])}</code>")
+                except Exception:
+                    pass
     sys.exit(1 if failures else 0)
