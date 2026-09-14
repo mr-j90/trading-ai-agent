@@ -1,9 +1,11 @@
-"""Trading agent. Two entry points, both scheduled by launchd:
+"""Trading agent. Runs one or all strategies from strategies.json, each on its own Alpaca paper account.
 
-  main.py           decision cycle, 3x/day (com.ies.trading-agent.plist): asks the model, places orders
-  main.py --retry   10 min after each decision (com.ies.trading-agent-retry.plist): reruns it only if it failed
-  main.py --guard   mechanical exits, every 30 min (com.ies.trading-agent-guard.plist): no model call
+  main.py [--strategy NAME | --all]           decision cycle, 3x/day (com.ies.trading-agent.plist)
+  main.py --retry [--strategy NAME | --all]   10 min later: rerun only if that decision failed
+  main.py --guard [--strategy NAME | --all]   mechanical exits, every 30 min, no model call
+  flags: --dry-run (never submit), --no-summary (skip the Telegram summary)
 
+State per strategy lives in runs/<name>/ (journal.jsonl, benchmark.json, peaks.json, HALT, .lock).
 Decisions locked on the wayfinder map: https://github.com/mr-j90/trading-ai-agent/issues/1
 """
 
@@ -14,8 +16,7 @@ import os
 import sys
 import time as time_module
 import urllib.request
-from datetime import datetime, time, timedelta, timezone
-from pathlib import Path
+from datetime import date, datetime, time, timedelta, timezone
 from typing import Literal
 
 from alpaca.data.historical import NewsClient, StockHistoricalDataClient
@@ -28,35 +29,27 @@ from dotenv import load_dotenv
 from openai import OpenAI
 from pydantic import BaseModel
 
+from strategies import STRATEGIES, Strategy
 from watchlist import SECTOR_OF
 
 load_dotenv()
-KEY, SECRET = os.environ["ALPACA_API_KEY"], os.environ["ALPACA_SECRET_KEY"]
-trading = TradingClient(KEY, SECRET, paper=True)  # ponytail: paper hardcoded; real money is a separate effort
-data = StockHistoricalDataClient(KEY, SECRET)
-news = NewsClient(KEY, SECRET)
+# market data is account-agnostic: one data client on the main keys serves every strategy
+data = StockHistoricalDataClient(os.environ["ALPACA_API_KEY"], os.environ["ALPACA_SECRET_KEY"])
+news = NewsClient(os.environ["ALPACA_API_KEY"], os.environ["ALPACA_SECRET_KEY"])
 llm = OpenAI()
+_clients: dict[str, TradingClient] = {}
 
-MODEL = "gpt-5.6-terra"
-START_EQUITY = 500.0
-MAX_POSITION_PCT = 0.20
-MAX_SECTOR_PCT = 0.60
-DAILY_STOP_PCT = 0.03
-MAX_ORDERS = 5
-STOP_LOSS_PCT = 0.08  # from entry
-TRAILING_STOP_PCT = 0.10  # from the position's peak price
-KILL_DRAWDOWN_PCT = 0.20  # of contributed capital (was a fixed $400 on $500)
-KILL_BENCHMARK_GAP = 0.15
+
+def trading(S: Strategy) -> TradingClient:
+    if S.name not in _clients:
+        k, s = S.keys  # type: ignore[misc]  # callers check S.keys first
+        _clients[S.name] = TradingClient(k, s, paper=True)  # ponytail: paper hardcoded; real money is a separate effort
+    return _clients[S.name]
+
+
 SUMMARY_WINDOW = timedelta(minutes=90)
 SYMBOLS = list(SECTOR_OF)
 UTC = timezone.utc
-
-ROOT = Path(__file__).parent
-JOURNAL = ROOT / "journal.jsonl"
-BENCHMARK = ROOT / "benchmark.json"  # ledger: contributed capital, benchmark share units, deposit ids seen
-PEAKS = ROOT / "peaks.json"  # symbol -> highest price seen while held
-HALT = ROOT / "HALT"
-LOCK = ROOT / ".lock"
 
 
 class Order(BaseModel):
@@ -71,29 +64,32 @@ class Decision(BaseModel):
     market_view: str
 
 
-INSTRUCTIONS = f"""You manage a small long-only US equities paper account, starting equity ${START_EQUITY:.0f}.
+def instructions(S: Strategy) -> str:
+    return f"""You manage a small long-only US equities paper account, starting equity ${S.start_equity:.0f}.
 You may only trade the watchlist symbols given. Orders are dollar-sized market orders that fill immediately.
 Hard limits enforced by code (orders that break them are dropped and shown to you next cycle):
-- max {MAX_POSITION_PCT:.0%} of equity in any one symbol and {MAX_SECTOR_PCT:.0%} in any one sector; buys limited to available cash
-- no buys after equity falls {DAILY_STOP_PCT:.0%} below start-of-day; sells always allowed
-- at most {MAX_ORDERS} orders per cycle; sell notional cannot exceed the position's market value
-Code also runs mechanical exits every 30 minutes without you: sell a position {STOP_LOSS_PCT:.0%} below entry,
-sell {TRAILING_STOP_PCT:.0%} below its peak price, trim anything above the position cap. Do not duplicate those;
+- max {S.max_position_pct:.0%} of equity in any one symbol and {S.max_sector_pct:.0%} in any one sector; buys limited to available cash
+- no buys after equity falls {S.daily_stop_pct:.0%} below start-of-day; sells always allowed
+- at most {S.max_orders} orders per cycle; sell notional cannot exceed the position's market value
+Code also runs mechanical exits every 30 minutes without you: sell a position {S.stop_loss_pct:.0%} below entry,
+sell {S.trailing_stop_pct:.0%} below its peak price, trim anything above the position cap. Do not duplicate those;
 spend your attention on entries and on selling when a thesis has broken.
 Return an empty orders list to hold. Hold unless something changed since your last entry: trading costs nothing
 here but churn rarely helps, and chasing an intraday move that already happened is churn.
+{S.style}
 market_view is your journal entry: 2-4 sentences on what you see and why you acted or held."""
 
 
 # ---------- journal ----------
-def read_journal() -> list[dict]:
-    if not JOURNAL.exists():
+def read_journal(S: Strategy) -> list[dict]:
+    p = S.dir / "journal.jsonl"
+    if not p.exists():
         return []
-    return [json.loads(line) for line in JOURNAL.read_text().splitlines() if line.strip()]
+    return [json.loads(line) for line in p.read_text().splitlines() if line.strip()]
 
 
-def append_journal(entry: dict) -> None:
-    with JOURNAL.open("a") as f:
+def append_journal(S: Strategy, entry: dict) -> None:
+    with (S.dir / "journal.jsonl").open("a") as f:
         f.write(json.dumps(entry, default=str) + "\n")
 
 
@@ -123,16 +119,16 @@ def headlines(now: datetime) -> list[str]:
 
 
 # ---------- risk ----------
-def validate(orders: list[Order], cash: float, equity: float, market_value: dict[str, float], buys_blocked: bool):
+def validate(S: Strategy, orders: list[Order], cash: float, equity: float, market_value: dict[str, float], buys_blocked: bool):
     """Pure. Returns (placed, rejected). market_value is copied, not mutated."""
     mv = dict(market_value)
-    cap, sector_cap = MAX_POSITION_PCT * equity, MAX_SECTOR_PCT * equity
+    cap, sector_cap = S.max_position_pct * equity, S.max_sector_pct * equity
     sector_mv = lambda sector: sum(v for s, v in mv.items() if SECTOR_OF.get(s) == sector)
     placed, rejected = [], []
     for o in orders:
         why = None
-        if len(placed) >= MAX_ORDERS:
-            why = f"max {MAX_ORDERS} orders per cycle"
+        if len(placed) >= S.max_orders:
+            why = f"max {S.max_orders} orders per cycle"
         elif o.notional_usd < 1:
             why = "below $1 minimum"
         elif o.side == "buy":
@@ -158,27 +154,27 @@ def validate(orders: list[Order], cash: float, equity: float, market_value: dict
     return placed, rejected
 
 
-def guard_orders(positions, equity: float, peaks: dict[str, float]) -> tuple[list[Order], dict[str, float]]:
+def guard_orders(S: Strategy, positions, equity: float, peaks: dict[str, float]) -> tuple[list[Order], dict[str, float]]:
     """Pure. Mechanical exits: stop-loss from entry, trailing stop from peak, trim to cap. Returns (orders, new_peaks)."""
-    cap = MAX_POSITION_PCT * equity
+    cap = S.max_position_pct * equity
     orders, new_peaks = [], {}
     for p in positions:
         price, entry, mv = float(p.current_price), float(p.avg_entry_price), float(p.market_value)
         peak = max(peaks.get(p.symbol, entry), price)
         new_peaks[p.symbol] = peak
-        if price <= entry * (1 - STOP_LOSS_PCT):
+        if price <= entry * (1 - S.stop_loss_pct):
             orders.append(Order(symbol=p.symbol, side="sell", notional_usd=mv, reason=f"stop-loss: {price / entry - 1:.1%} from entry {entry:.2f}"))
-        elif price <= peak * (1 - TRAILING_STOP_PCT):
+        elif price <= peak * (1 - S.trailing_stop_pct):
             orders.append(Order(symbol=p.symbol, side="sell", notional_usd=mv, reason=f"trailing stop: {price / peak - 1:.1%} from peak {peak:.2f}"))
         elif mv - cap >= 1:
-            orders.append(Order(symbol=p.symbol, side="sell", notional_usd=round(mv - cap, 2), reason=f"trim to {MAX_POSITION_PCT:.0%} cap (${cap:.0f})"))
+            orders.append(Order(symbol=p.symbol, side="sell", notional_usd=round(mv - cap, 2), reason=f"trim to {S.max_position_pct:.0%} cap (${cap:.0f})"))
     return orders, new_peaks
 
 
-def submit(o: Order, market_value: dict[str, float]):
+def submit(S: Strategy, o: Order, market_value: dict[str, float]):
     if o.side == "sell" and o.notional_usd >= 0.98 * market_value.get(o.symbol, 0):
-        return trading.close_position(o.symbol)  # avoid a fractional crumb
-    return trading.submit_order(
+        return trading(S).close_position(o.symbol)  # avoid a fractional crumb
+    return trading(S).submit_order(
         MarketOrderRequest(symbol=o.symbol, notional=round(o.notional_usd, 2), side=OrderSide(o.side), time_in_force=TimeInForce.DAY)
     )
 
@@ -202,17 +198,18 @@ def benchmark_value(ledger: dict, prices: dict[str, float]) -> float:
     return sum(u * prices[s] for s, u in ledger["units"].items() if s in prices)
 
 
-def sync_ledger(prices: dict[str, float]) -> dict:
+def sync_ledger(S: Strategy, prices: dict[str, float]) -> dict:
     """Load the benchmark/contributions ledger, creating it on day one and folding in any new Alpaca cash deposits."""
-    if BENCHMARK.exists():
-        ledger = json.loads(BENCHMARK.read_text())
+    p = S.dir / "benchmark.json"
+    if p.exists():
+        ledger = json.loads(p.read_text())
     else:
-        ledger = apply_deposit({"contributed": 0.0, "units": {}, "seen": []}, START_EQUITY, prices)
-    for a in trading.get("/account/activities", {"activity_types": "CSD,CSW"}):  # empty on paper; real deposits show up here
+        ledger = apply_deposit({"contributed": 0.0, "units": {}, "seen": []}, S.start_equity, prices)
+    for a in trading(S).get("/account/activities", {"activity_types": "CSD,CSW"}):  # empty on paper; real deposits show up here
         if a["id"] not in ledger["seen"] and a.get("status") != "canceled":
             ledger = apply_deposit(ledger, float(a["net_amount"]), prices)
             ledger["seen"].append(a["id"])
-    BENCHMARK.write_text(json.dumps(ledger, indent=1))
+    p.write_text(json.dumps(ledger, indent=1))
     return ledger
 
 
@@ -236,14 +233,14 @@ def notify(text: str) -> None:
                 time_module.sleep(2)
 
 
-def halt(reason: str) -> None:
-    HALT.write_text(reason)
-    notify(f"⛔ <b>Trading agent halted:</b> {esc(reason)}")
+def halt(S: Strategy, reason: str) -> None:
+    (S.dir / "HALT").write_text(reason)
+    notify(f"⛔ <b>[{S.name}] halted:</b> {esc(reason)}")
 
 
-def daily_summary(equity: float, cash: float, positions, today: list[dict], contributed: float, bench_value: float | None) -> str:
+def daily_summary(S: Strategy, equity: float, cash: float, positions, today: list[dict], contributed: float, bench_value: float | None) -> str:
     agent_ret = equity / contributed - 1
-    lines = [f"<b>Trading agent, {today[-1]['ts'][:10]}</b>"]
+    lines = [f"<b>[{S.name}] {today[-1]['ts'][:10]}</b> · {S.model}"]
     sod = next((e["equity"] for e in today if e.get("equity")), None)
     day = f"{equity / sod - 1:+.2%} today" if sod else ""
     lines.append(f"Equity ${equity:.2f} (cash ${cash:.2f}), {day}, {agent_ret:+.2%} on ${contributed:.0f} contributed")
@@ -277,25 +274,33 @@ def retry(fn, attempts: int = 4, wait: float = 15.0):
         except Exception as e:
             if i == attempts - 1:
                 raise
-            print(f"{fn.__name__ if hasattr(fn, '__name__') else 'call'} failed ({e.__class__.__name__}), retrying in {wait:.0f}s")
+            print(f"{getattr(fn, '__name__', 'call')} failed ({e.__class__.__name__}), retrying in {wait:.0f}s")
             time_module.sleep(wait)
 
 
-def preflight():
-    clock = retry(trading.get_clock)
+def preflight(S: Strategy):
+    t = trading(S)
+    clock = retry(t.get_clock)
     if not clock.is_open:
         return clock, None, None
-    return clock, retry(trading.get_account), retry(trading.get_all_positions)
+    return clock, retry(t.get_account), retry(t.get_all_positions)
 
 
-def cycle(dry_run: bool, summary: bool = True) -> None:
-    if HALT.exists():
-        print("halted:", HALT.read_text())
-        return
+def skip_reason(S: Strategy) -> str | None:
+    if not S.keys:
+        return f"no {S.key_env}_API_KEY / _SECRET_KEY in .env"
+    if (S.dir / "HALT").exists():
+        return "halted: " + (S.dir / "HALT").read_text()
+    if date.today().isoformat() >= S.ends:
+        return f"ended {S.ends}"
+    return None
+
+
+def cycle(S: Strategy, dry_run: bool, summary: bool = True) -> None:
     try:
-        clock, account, positions = preflight()
+        clock, account, positions = preflight(S)
     except Exception as e:  # journal it so the dashboard and summary show the gap
-        append_journal({"kind": "cycle", "ts": datetime.now(UTC).isoformat(), "equity": None, "cash": None, "market_view": "", "placed": [], "rejected": [], "error": f"preflight: {e!r}"})
+        append_journal(S, {"kind": "cycle", "ts": datetime.now(UTC).isoformat(), "equity": None, "cash": None, "market_view": "", "placed": [], "rejected": [], "error": f"preflight: {e!r}"})
         raise
     if account is None:
         print("market closed, next open", clock.next_open)
@@ -303,10 +308,10 @@ def cycle(dry_run: bool, summary: bool = True) -> None:
     now = datetime.now(UTC)
     equity, cash = float(account.equity), float(account.buying_power)
     market_value = {p.symbol: float(p.market_value) for p in positions}
-    journal = read_journal()
+    journal = read_journal(S)
     today = [e for e in journal if e["ts"][:10] == now.date().isoformat()]
     sod_equity = next((e["equity"] for e in today if e["equity"]), equity)
-    buys_blocked = equity < (1 - DAILY_STOP_PCT) * sod_equity
+    buys_blocked = equity < (1 - S.daily_stop_pct) * sod_equity
     entry = {"kind": "cycle", "ts": now.isoformat(), "equity": equity, "cash": cash, "market_view": "", "placed": [], "rejected": [], "error": None}
     last_close: dict[str, float] = {}
     try:
@@ -327,44 +332,43 @@ def cycle(dry_run: bool, summary: bool = True) -> None:
             "news_24h": headlines(now),
         }
         resp = llm.responses.parse(
-            model=MODEL, reasoning={"effort": "low"}, instructions=INSTRUCTIONS, input=json.dumps(state, default=str), text_format=Decision
+            model=S.model, reasoning={"effort": S.reasoning}, instructions=instructions(S), input=json.dumps(state, default=str), text_format=Decision
         )
         decision = resp.output_parsed or Decision(orders=[], market_view="Model refused to answer; holding.")
         entry["market_view"] = decision.market_view
-        placed, rejected = validate(decision.orders, cash, equity, market_value, buys_blocked)
+        placed, rejected = validate(S, decision.orders, cash, equity, market_value, buys_blocked)
         for o in placed:
             if not dry_run:
-                submit(o, market_value)
+                submit(S, o, market_value)
         entry["placed"], entry["rejected"] = [o.model_dump() for o in placed], rejected
     except Exception as e:  # journal it; the summary surfaces it
         entry["error"] = repr(e)
     print(json.dumps(entry, indent=1, default=str))
     if dry_run:
         return
-    append_journal(entry)
+    append_journal(S, entry)
     if summary and clock.next_close - now <= SUMMARY_WINDOW:
-        ledger = sync_ledger(last_close) if last_close else None
-        contributed = ledger["contributed"] if ledger else START_EQUITY
+        ledger = sync_ledger(S, last_close) if last_close else None
+        contributed = ledger["contributed"] if ledger else S.start_equity
         bench_value = benchmark_value(ledger, last_close) if ledger else None
-        notify(daily_summary(equity, cash, positions, today + [entry], contributed, bench_value))
+        notify(daily_summary(S, equity, cash, positions, today + [entry], contributed, bench_value))
         agent_ret = equity / contributed - 1
-        if agent_ret < -KILL_DRAWDOWN_PCT:
-            halt(f"equity ${equity:.2f} is {agent_ret:.1%} on ${contributed:.0f} contributed")
-        elif bench_value is not None and agent_ret - (bench_value / contributed - 1) < -KILL_BENCHMARK_GAP:
-            halt(f"{(agent_ret - (bench_value / contributed - 1)) * 100:.1f} pts behind benchmark")
+        if agent_ret < -S.kill_drawdown_pct:
+            halt(S, f"equity ${equity:.2f} is {agent_ret:.1%} on ${contributed:.0f} contributed")
+        elif bench_value is not None and agent_ret - (bench_value / contributed - 1) < -S.kill_benchmark_gap:
+            halt(S, f"{(agent_ret - (bench_value / contributed - 1)) * 100:.1f} pts behind benchmark")
 
 
-def guard(dry_run: bool) -> None:
-    if HALT.exists():
-        return
-    clock, account, positions = preflight()
+def guard(S: Strategy, dry_run: bool) -> None:
+    clock, account, positions = preflight(S)
     if account is None:
         return
     now = datetime.now(UTC)
-    peaks = json.loads(PEAKS.read_text()) if PEAKS.exists() else {}
-    orders, peaks = guard_orders(positions, float(account.equity), peaks)
+    peaks_file = S.dir / "peaks.json"
+    peaks = json.loads(peaks_file.read_text()) if peaks_file.exists() else {}
+    orders, peaks = guard_orders(S, positions, float(account.equity), peaks)
     if not dry_run:
-        PEAKS.write_text(json.dumps(peaks, indent=1))
+        peaks_file.write_text(json.dumps(peaks, indent=1))
     if not orders:
         print(f"guard {now:%H:%M}Z: {len(positions)} positions, nothing to do")
         return
@@ -374,32 +378,53 @@ def guard(dry_run: bool) -> None:
     try:
         for o in orders:
             if not dry_run:
-                submit(o, market_value)
+                submit(S, o, market_value)
         entry["placed"] = [o.model_dump() for o in orders]
     except Exception as e:
         entry["error"] = repr(e)
     print(json.dumps(entry, indent=1, default=str))
     if not dry_run:
-        append_journal(entry)
+        append_journal(S, entry)
 
 
-def retry_cycle() -> None:
+def retry_cycle(S: Strategy) -> None:
     """Runs 10 min after each scheduled decision; only acts if that decision left no successful entry."""
     cutoff = datetime.now(UTC) - timedelta(minutes=20)
-    ok = any(e.get("kind", "cycle") == "cycle" and not e["error"] and datetime.fromisoformat(e["ts"]) >= cutoff for e in read_journal())
+    ok = any(e.get("kind", "cycle") == "cycle" and not e["error"] and datetime.fromisoformat(e["ts"]) >= cutoff for e in read_journal(S))
     if ok:
         print("retry: last decision cycle succeeded, nothing to do")
         return
     print("retry: no successful decision cycle in the last 20 min, running one")
-    cycle(dry_run=False)
+    cycle(S, dry_run=False)
+
+
+def run(S: Strategy, argv: list[str]) -> None:
+    print(f"== {S.name} ({S.model})")
+    if reason := skip_reason(S):
+        print("skip:", reason)
+        return
+    with (S.dir / ".lock").open("w") as lock:  # a guard and a decision cycle on the same account must not overlap
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        if "--guard" in argv:
+            guard(S, dry_run="--dry-run" in argv)
+        elif "--retry" in argv:
+            retry_cycle(S)
+        else:
+            cycle(S, dry_run="--dry-run" in argv, summary="--no-summary" not in argv)
 
 
 if __name__ == "__main__":
-    with LOCK.open("w") as lock:  # a guard and a decision cycle must not overlap
-        fcntl.flock(lock, fcntl.LOCK_EX)
-        if "--guard" in sys.argv:
-            guard(dry_run="--dry-run" in sys.argv)
-        elif "--retry" in sys.argv:
-            retry_cycle()
-        else:
-            cycle(dry_run="--dry-run" in sys.argv, summary="--no-summary" not in sys.argv)
+    argv = sys.argv[1:]
+    if "--all" in argv:
+        chosen = list(STRATEGIES.values())
+    else:
+        name = argv[argv.index("--strategy") + 1] if "--strategy" in argv else "main"
+        chosen = [STRATEGIES[name]]
+    failures = 0
+    for S in chosen:
+        try:
+            run(S, argv)
+        except Exception as e:  # one strategy's failure must not stop the others
+            failures += 1
+            print(f"!! {S.name} failed: {e!r}")
+    sys.exit(1 if failures else 0)

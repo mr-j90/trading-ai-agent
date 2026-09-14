@@ -2,10 +2,6 @@
 .env
 __pycache__/
 .claude/worktrees/
-journal.jsonl
-benchmark.json
-HALT
+runs/
 agent.log
-peaks.json
-.lock
 dashboard.log

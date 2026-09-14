@@ -3,10 +3,17 @@ import { useEffect, useState } from "react";
 
 type Position = { symbol: string; sector: string; qty: number; marketValue: number; price: number; unrealizedPl: number; unrealizedPlpc: number; dayChangePc: number };
 type Entry = { ts: string; equity: number; market_view: string; placed: any[]; rejected: any[]; error: string | null };
+type StrategyCfg = { name: string; description?: string; model: string; reasoning: string; max_position_pct: number; max_sector_pct: number; daily_stop_pct: number; max_orders: number; stop_loss_pct: number; trailing_stop_pct: number; ends: string; key_env: string };
 type State = {
+  configured: boolean; strategy: StrategyCfg;
   now: string; equity: number; cash: number; startOfDayEquity: number; contributed: number; benchmarkValue: number | null; halt: string | null;
   lastRun: string | null; lastError: string | null; nextRun: string | null; curve: [number, number][];
   positions: Position[]; watchlist: Record<string, string[]>; prices: Record<string, { price: number; dayPc: number | null }>; journal: Entry[];
+};
+type Row = {
+  name: string; description: string; model: string; ends: string; halt: string | null; configured: boolean; ended: boolean;
+  lastRun: string | null; lastError: string | null; cycles: number; trades: number; guardExits: number; rejected: number; errors: number;
+  equity: number | null; dayChange?: number; contributed: number; benchmarkValue: number | null; positions: number;
 };
 
 const POLL_MS = 15_000;
@@ -16,53 +23,114 @@ const tone = (n: number | null) => (n == null ? "" : n >= 0 ? "up" : "down");
 const hhmm = (iso: string) => new Date(iso).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" });
 
 export default function Page() {
+  const [sel, setSel] = useState<string>(() => { try { return location.hash.slice(1) || "main"; } catch { return "main"; } });
+  const [rows, setRows] = useState<Row[] | null>(null);
   const [s, setS] = useState<State | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [running, setRunning] = useState<string | null>(null);
   const [runOut, setRunOut] = useState<RunResult | null>(null);
-  const tick = () =>
-    fetch("/api/state").then(async (r) => {
-      if (!r.ok) throw new Error(await r.text());
-      setS(await r.json()); setErr(null);
-    }).catch((e) => setErr(String(e)));
+  const tick = (name = sel) =>
+    Promise.all([
+      fetch("/api/strategies").then(async (r) => { if (!r.ok) throw new Error(await r.text()); setRows((await r.json()).rows); }),
+      fetch(`/api/state?strategy=${name}`).then(async (r) => { if (!r.ok) throw new Error(await r.text()); setS(await r.json()); }),
+    ]).then(() => setErr(null)).catch((e) => setErr(String(e)));
   useEffect(() => {
-    tick();
-    const id = setInterval(tick, POLL_MS);
+    setS(null); tick(sel);
+    try { location.hash = sel; } catch {}
+    const id = setInterval(() => tick(sel), POLL_MS);
     return () => clearInterval(id);
-  }, []);
-  const run = async (job: "cycle" | "guard") => {
-    if (job === "cycle" && !confirm("Run a decision cycle now? The model may place paper orders.")) return;
-    setRunning(job); setRunOut(null);
+  }, [sel]);
+  const run = async (job: "cycle" | "guard", name = sel) => {
+    if (job === "cycle" && !confirm(`Run a decision cycle for "${name}" now? The model may place paper orders.`)) return;
+    setRunning(`${name}:${job}`); setRunOut(null);
     try {
-      const r = await fetch("/api/run", { method: "POST", body: JSON.stringify({ job }) });
+      const r = await fetch("/api/run", { method: "POST", body: JSON.stringify({ job, strategy: name }) });
       const j = await r.json();
-      setRunOut(parseRun(job, j.output));
-    } catch (e) { setRunOut({ job, text: String(e), at: new Date().toISOString() }); }
+      setRunOut({ ...parseRun(job, j.output), strategy: name });
+    } catch (e) { setRunOut({ job, strategy: name, text: String(e), at: new Date().toISOString() }); }
     setRunning(null); tick();
   };
+  const setHalt = async (name: string, halt: boolean) => {
+    if (halt && !confirm(`Halt "${name}"? Scheduled runs will skip it until resumed.`)) return;
+    await fetch("/api/halt", { method: "POST", body: JSON.stringify({ strategy: name, halt }) });
+    tick();
+  };
 
-  if (!s) return <main className="wrap"><p className="muted">{err ?? "loading…"}</p></main>;
-  const sinceStart = s.equity / s.contributed - 1;
-  const day = s.equity / s.startOfDayEquity - 1;
-  const benchRet = s.benchmarkValue == null ? null : s.benchmarkValue / s.contributed - 1;
-  const gap = benchRet == null ? null : sinceStart - benchRet;
+  if (!rows) return <main className="wrap"><p className="muted">{err ?? "loading…"}</p></main>;
+  const cur = rows.find((r) => r.name === sel);
+  const busy = (name: string) => !!running || !!rows.find((r) => r.name === name)?.halt || !rows.find((r) => r.name === name)?.configured;
 
   return (
     <main className="wrap">
       <header className="bar">
-        <span><span className={`dot ${s.halt ? "halted" : "live"}`} /> trading agent · paper · {s.halt ? "HALTED" : "live"}</span>
-        <span className="actions">
-          <button onClick={() => run("cycle")} disabled={!!running || !!s.halt}>{running === "cycle" ? "running…" : "▶ run decision now"}</button>
-          <button onClick={() => run("guard")} disabled={!!running || !!s.halt}>{running === "guard" ? "running…" : "run guard"}</button>
-          <span className="muted">updated {hhmm(s.now)}{err ? ` · refresh failed: ${err}` : ""}</span>
-        </span>
+        <span><span className={`dot ${cur?.halt ? "halted" : cur?.configured ? "live" : ""}`} /> trading agents · paper · {rows.filter((r) => r.configured && !r.halt).length}/{rows.length} live</span>
+        <span className="muted" style={{ textTransform: "none", letterSpacing: 0 }}>updated {hhmm(new Date().toISOString())}{err ? ` · refresh failed: ${err}` : ""}</span>
       </header>
       {runOut && <RunOutput r={runOut} onClose={() => setRunOut(null)} />}
-      {s.halt && <div className="halt">⛔ halted: {s.halt}</div>}
 
+      <section className="card admin">
+        <div className="row"><div className="label">Strategies</div><span className="muted small">runs until each strategy's end date · click a row for detail</span></div>
+        <div className="scroll">
+          <table>
+            <thead><tr>
+              <th>strategy</th><th>model</th><th>status</th><th className="r">equity</th><th className="r">today</th><th className="r">return</th><th className="r">vs bench</th>
+              <th className="r">pos</th><th className="r">cycles</th><th className="r">trades</th><th className="r">guard</th><th className="r">rejected</th><th className="r">errors</th><th>last run</th><th></th>
+            </tr></thead>
+            <tbody>
+              {rows.map((r) => {
+                const ret = r.equity == null ? null : r.equity / r.contributed - 1;
+                const bench = r.benchmarkValue == null ? null : r.benchmarkValue / r.contributed - 1;
+                const gap = ret == null || bench == null ? null : ret - bench;
+                const status = !r.configured ? "not configured" : r.halt ? "halted" : r.ended ? "ended" : "live";
+                return (
+                  <tr key={r.name} className={`${r.name === sel ? "selected" : ""} ${r.configured ? "" : "dim"}`} onClick={() => setSel(r.name)} title={r.description}>
+                    <td><b>{r.name}</b><div className="muted small desc">{r.description}</div></td>
+                    <td className="muted">{r.model}</td>
+                    <td><span className={`badge ${status.replace(" ", "-")}`}>{status}</span></td>
+                    <td className="r">{r.equity == null ? "–" : usd(r.equity)}</td>
+                    <td className={`r ${tone(r.dayChange ?? null)}`}>{pct(r.dayChange ?? null)}</td>
+                    <td className={`r ${tone(ret)}`}>{pct(ret)}</td>
+                    <td className={`r ${tone(gap)}`}>{gap == null ? "–" : `${(gap * 100).toFixed(1)} pts`}</td>
+                    <td className="r">{r.positions}</td><td className="r">{r.cycles}</td><td className="r">{r.trades}</td><td className="r">{r.guardExits}</td>
+                    <td className="r">{r.rejected}</td><td className={`r ${r.errors ? "down" : ""}`}>{r.errors}</td>
+                    <td className="muted">{r.lastRun ? new Date(r.lastRun).toLocaleString([], { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "never"}</td>
+                    <td className="actions" onClick={(e) => e.stopPropagation()}>
+                      <button onClick={() => run("cycle", r.name)} disabled={busy(r.name)} title="run a decision cycle now">{running === `${r.name}:cycle` ? "…" : "▶"}</button>
+                      <button onClick={() => run("guard", r.name)} disabled={busy(r.name)} title="run the guard now">{running === `${r.name}:guard` ? "…" : "guard"}</button>
+                      {r.halt ? <button onClick={() => setHalt(r.name, false)} disabled={!r.configured}>resume</button> : <button onClick={() => setHalt(r.name, true)} disabled={!r.configured}>halt</button>}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      {!s ? <p className="muted">loading {sel}…</p> : !s.configured ? (
+        <section className="card">
+          <div className="label">{sel} · not configured</div>
+          <p className="muted">This strategy needs its own Alpaca paper account. Create one in the Alpaca dashboard, reset it to $500, then add to <code>.env</code>:</p>
+          <pre>{`${s.strategy.key_env}_API_KEY=\n${s.strategy.key_env}_SECRET_KEY=`}</pre>
+          <p className="muted small">{s.strategy.description}</p>
+        </section>
+      ) : <Detail s={s} sel={sel} />}
+    </main>
+  );
+}
+
+function Detail({ s, sel }: { s: State; sel: string }) {
+  const sinceStart = s.equity / s.contributed - 1;
+  const day = s.equity / s.startOfDayEquity - 1;
+  const benchRet = s.benchmarkValue == null ? null : s.benchmarkValue / s.contributed - 1;
+  const gap = benchRet == null ? null : sinceStart - benchRet;
+  const S = s.strategy;
+  return (
+    <>
+      {s.halt && <div className="halt">⛔ {sel} halted: {s.halt}</div>}
       <section className="grid">
         <div className="card hero">
-          <div className="label">Equity</div>
+          <div className="label">{sel} · equity · {S.model}</div>
           <div className="big">{usd(s.equity)}</div>
           <div className="row">
             <Stat label="today" value={pct(day)} t={tone(day)} />
@@ -79,9 +147,10 @@ export default function Page() {
             <dt>last run</dt><dd>{s.lastRun ? new Date(s.lastRun).toLocaleString() : "never"}</dd>
             <dt>next run</dt><dd>{s.nextRun ?? "—"}</dd>
             <dt>last error</dt><dd className={s.lastError ? "down" : ""}>{s.lastError ?? "none"}</dd>
-            <dt>decisions</dt><dd>09:45 · 12:30 · 15:30 ET</dd>
-            <dt>guards</dt><dd>every 30 min · −8% stop · −10% trailing · trim to 20%</dd>
-            <dt>caps</dt><dd>20% per symbol · 60% per sector</dd>
+            <dt>decisions</dt><dd>09:45 · 12:30 · 15:30 ET · until {S.ends}</dd>
+            <dt>guards</dt><dd>every 30 min · −{Math.round(S.stop_loss_pct * 100)}% stop · −{Math.round(S.trailing_stop_pct * 100)}% trailing · trim to {Math.round(S.max_position_pct * 100)}%</dd>
+            <dt>caps</dt><dd>{Math.round(S.max_position_pct * 100)}% per symbol · {Math.round(S.max_sector_pct * 100)}% per sector · {S.max_orders} orders/cycle · {Math.round(S.daily_stop_pct * 100)}% daily stop</dd>
+            <dt>model</dt><dd>{S.model} · reasoning {S.reasoning}</dd>
           </dl>
           <div className="label" style={{ marginTop: 16 }}>Watchlist · day change</div>
           <div className="heat">
@@ -136,11 +205,11 @@ export default function Page() {
           ))}
         </div>
       </section>
-    </main>
+    </>
   );
 }
 
-type RunResult = { job: string; at: string; entry?: Entry; text?: string };
+type RunResult = { job: string; at: string; strategy?: string; entry?: Entry; text?: string };
 
 /** main.py prints a pretty JSON journal entry (indent=1, so it ends in "\n}") possibly followed by other text. */
 function parseRun(job: string, out: string): RunResult {
@@ -161,7 +230,7 @@ function RunOutput({ r, onClose }: { r: RunResult; onClose: () => void }) {
   return (
     <div className={`runout ${status ?? ""}`}>
       <div className="row">
-        <span><b>{r.job === "guard" ? "Guard" : "Decision"} run</b> <span className="muted">· {new Date(r.at).toLocaleTimeString()}</span></span>
+        <span><b>{r.strategy ? `${r.strategy} · ` : ""}{r.job === "guard" ? "Guard" : "Decision"} run</b> <span className="muted">· {new Date(r.at).toLocaleTimeString()}</span></span>
         <span className="row" style={{ gap: 12 }}>
           {e && <span className="muted">placed {e.placed.length} · rejected {e.rejected.length} · equity {usd(e.equity)}</span>}
           <button onClick={onClose} aria-label="dismiss">×</button>

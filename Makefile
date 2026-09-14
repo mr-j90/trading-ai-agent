@@ -21,18 +21,21 @@ test:  ## run the self-checks and type-check the dashboard
 	uv run python test_main.py
 	cd dashboard && npx tsc --noEmit -p .
 
-dry-run:  ## one decision cycle, nothing submitted
-	uv run --frozen main.py --dry-run
+S ?= main  # strategy for dry-run / guard / run, e.g. `make dry-run S=luna`; `S=--all` for every strategy
+STRAT = $(if $(filter --all,$(S)),--all,--strategy $(S))
 
-guard:  ## one guard pass, nothing submitted
-	uv run --frozen main.py --guard --dry-run
+dry-run:  ## one decision cycle for $(S), nothing submitted
+	uv run --frozen main.py $(STRAT) --dry-run
 
-run:  ## one REAL decision cycle now (places paper orders, no summary)
-	uv run --frozen main.py --no-summary
+guard:  ## one guard pass for $(S), nothing submitted
+	uv run --frozen main.py $(STRAT) --guard --dry-run
 
-status:  ## launchd job states and the last journal entries
+run:  ## one REAL decision cycle for $(S) now (places paper orders, no summary)
+	uv run --frozen main.py $(STRAT) --no-summary
+
+status:  ## launchd job states and each strategy's last journal entry
 	@for j in $(JOBS); do printf "%-32s" $$j; launchctl print gui/$(UID)/$$j 2>/dev/null | awk '/^\t(state|runs|last exit code) =/{printf "%s ", $$0}'; echo; done
-	@tail -n 3 journal.jsonl 2>/dev/null | python3 -c 'import sys,json; [print(e["ts"][:16], e.get("kind","cycle"), "placed", len(e["placed"]), "err" if e["error"] else "", (e["market_view"] or "")[:70]) for e in map(json.loads, sys.stdin)]'
+	@for d in runs/*/; do n=$$(basename $$d); [ -f $$d/HALT ] && h=" HALTED" || h=""; printf "%-10s%s " $$n "$$h"; tail -n 1 $$d/journal.jsonl 2>/dev/null | python3 -c 'import sys,json; [print(e["ts"][:16], e.get("kind","cycle"), "placed", len(e["placed"]), "err" if e["error"] else "", (e["market_view"] or "")[:60]) for e in map(json.loads, sys.stdin)]' || echo "no runs"; done
 
 logs:  ## follow agent.log
 	tail -f agent.log

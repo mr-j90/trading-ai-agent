@@ -1,0 +1,28 @@
+{
+  "main": {
+    "key_env": "ALPACA",
+    "description": "Baseline: gpt-5.6-terra, low reasoning, default risk limits."
+  },
+  "luna": {
+    "key_env": "ALPACA_LUNA",
+    "model": "gpt-5.6-luna",
+    "description": "Same rules and prompt on the cheap model. Does model quality matter?"
+  },
+  "momentum": {
+    "key_env": "ALPACA_MOMENTUM",
+    "max_position_pct": 0.25,
+    "max_orders": 3,
+    "style": "Style: concentrate. Hold at most four names showing the strongest 20-day relative strength in the watchlist, sized to the cap. Rotate out of a name only when it drops out of the top group or a thesis breaks. Ignore intraday noise.",
+    "description": "Concentrated relative-strength: 25% cap, max 4 names, 3 orders per cycle."
+  },
+  "cautious": {
+    "key_env": "ALPACA_CAUTIOUS",
+    "max_position_pct": 0.15,
+    "max_sector_pct": 0.50,
+    "daily_stop_pct": 0.02,
+    "stop_loss_pct": 0.06,
+    "reasoning": "medium",
+    "style": "Style: capital preservation first. Prefer cash over marginal ideas; only buy when both the daily trend and the news flow support it. Never hold more than 70% invested.",
+    "description": "Defensive: 15% cap, 50% sector cap, tighter stops, medium reasoning."
+  }
+}

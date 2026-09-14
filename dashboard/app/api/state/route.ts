@@ -1,30 +1,9 @@
-// Read-only. Reads the agent's journal files and the Alpaca paper account; never writes.
-import { readFileSync, existsSync } from "node:fs";
-import { join } from "node:path";
+// Detail view for one strategy: journal files + its Alpaca paper account. Read-only.
 import { WATCHLIST, SECTOR_OF } from "../../watchlist";
+import { DATA, TRADING, alpaca, keysFor, readHalt, readJournal, readLedger, strategy } from "../lib";
 
 export const dynamic = "force-dynamic";
-
-const ROOT = join(process.cwd(), "..");
-const TRADING = "https://paper-api.alpaca.markets";
-const DATA = "https://data.alpaca.markets";
-const headers = () => ({
-  "APCA-API-KEY-ID": process.env.ALPACA_API_KEY!,
-  "APCA-API-SECRET-KEY": process.env.ALPACA_SECRET_KEY!,
-});
 const SCHEDULE_ET = ["09:45", "12:30", "15:30"]; // mirrors com.ies.trading-agent.plist
-
-async function alpaca<T>(url: string): Promise<T> {
-  const r = await fetch(url, { headers: headers(), cache: "no-store" });
-  if (!r.ok) throw new Error(`${url} -> ${r.status} ${await r.text()}`);
-  return r.json();
-}
-
-function readJournal() {
-  const p = join(ROOT, "journal.jsonl");
-  if (!existsSync(p)) return [];
-  return readFileSync(p, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l));
-}
 
 function nextRun(now: Date) {
   // ponytail: naive ET clock via Intl; ignores holidays (the agent's clock gate handles those)
@@ -39,36 +18,37 @@ function nextRun(now: Date) {
   return null;
 }
 
-export async function GET() {
-  const now = new Date();
-  const journal = readJournal();
-  const halt = existsSync(join(ROOT, "HALT")) ? readFileSync(join(ROOT, "HALT"), "utf8") : null;
-  // ledger written by main.py: { contributed, units: {sym: shares}, seen: [deposit ids] }
-  const ledger: { contributed: number; units: Record<string, number> } | null = existsSync(join(ROOT, "benchmark.json"))
-    ? JSON.parse(readFileSync(join(ROOT, "benchmark.json"), "utf8"))
-    : null;
+export async function GET(req: Request) {
+  const name = new URL(req.url).searchParams.get("strategy") ?? "main";
+  const S = strategy(name);
+  const headers = keysFor(S);
+  if (!headers) return Response.json({ configured: false, strategy: S }, { status: 200 });
 
+  const now = new Date();
+  const journal = readJournal(name);
+  const halt = readHalt(name);
+  const ledger = readLedger(name);
   const symbols = Object.keys(SECTOR_OF).join(",");
   const [account, positions, daily, intraday, snapshots] = await Promise.all([
-    alpaca<any>(`${TRADING}/v2/account`),
-    alpaca<any[]>(`${TRADING}/v2/positions`),
+    alpaca<any>(`${TRADING}/v2/account`, headers),
+    alpaca<any[]>(`${TRADING}/v2/positions`, headers),
     // Alpaca quirk: multi-day intraday history returns P&L deltas in `equity`; only 1D intraday returns real equity.
     // ponytail: period=3M covers the 8-week run; bump if it goes longer
-    alpaca<any>(`${TRADING}/v2/account/portfolio/history?period=3M&timeframe=1D`),
-    alpaca<any>(`${TRADING}/v2/account/portfolio/history?period=1D&timeframe=15Min&intraday_reporting=market_hours`),
-    alpaca<Record<string, any>>(`${DATA}/v2/stocks/snapshots?symbols=${symbols}&feed=iex`),
+    alpaca<any>(`${TRADING}/v2/account/portfolio/history?period=3M&timeframe=1D`, headers),
+    alpaca<any>(`${TRADING}/v2/account/portfolio/history?period=1D&timeframe=15Min&intraday_reporting=market_hours`, headers),
+    alpaca<Record<string, any>>(`${DATA}/v2/stocks/snapshots?symbols=${symbols}&feed=iex`, headers),
   ]);
   const points = (h: any): [number, number][] => (h.timestamp as number[]).map((t, i) => [t * 1000, h.equity[i]]);
-
   const last = (s: string) => snapshots[s]?.latestTrade?.p ?? snapshots[s]?.dailyBar?.c;
-  const contributed = ledger?.contributed ?? 500;
+  const contributed = ledger?.contributed ?? S.start_equity!;
   const benchmarkValue = ledger ? Object.entries(ledger.units).reduce((sum, [s, u]) => sum + (last(s) ? u * last(s) : 0), 0) : null;
 
   const today = now.toISOString().slice(0, 10);
   const todayEntries = journal.filter((e) => e.ts.startsWith(today));
-  // history includes the account before the $500 reset; keep only the run (from the first journal entry's day)
   const runStart = journal[0] ? new Date(journal[0].ts).setUTCHours(0, 0, 0, 0) : 0;
   return Response.json({
+    configured: true,
+    strategy: S,
     now: now.toISOString(),
     equity: +account.equity,
     cash: +account.buying_power,

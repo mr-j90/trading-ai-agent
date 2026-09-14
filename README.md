@@ -1,6 +1,19 @@
 # trading-ai-agent
 
-An LLM-driven paper-trading agent on Alpaca. A model (OpenAI, `gpt-5.6-terra`) decides trades three times a day across a fixed tech + blue-collar watchlist; code enforces the risk limits regardless of what the model says. A Next.js dashboard shows it live. Planning history and every decision live on the [wayfinder map](https://github.com/mr-j90/trading-ai-agent/issues/1).
+An LLM-driven paper-trading agent on Alpaca. A model (OpenAI) decides trades three times a day across a fixed tech + blue-collar watchlist; code enforces the risk limits regardless of what the model says. Several **strategies** run side by side, each on its own paper account, and a Next.js dashboard compares them. Planning history and every decision live on the [wayfinder map](https://github.com/mr-j90/trading-ai-agent/issues/1).
+
+## Strategies
+
+`strategies.json` defines them; both the agent and the dashboard read it. Each strategy is a paper account (`key_env` prefix for its keys in `.env`), a model, optional prompt `style`, its own risk numbers, and an `ends` date (default 2027-01-01). State lives in `runs/<name>/`.
+
+| name | idea | needs in `.env` |
+|---|---|---|
+| `main` | baseline: gpt-5.6-terra, default limits | `ALPACA_API_KEY`, `ALPACA_SECRET_KEY` |
+| `luna` | same rules on the cheap model | `ALPACA_LUNA_API_KEY`, `ALPACA_LUNA_SECRET_KEY` |
+| `momentum` | concentrated relative strength, 25% cap, 3 orders/cycle | `ALPACA_MOMENTUM_*` |
+| `cautious` | 15% cap, 50% sector cap, tighter stops, medium reasoning | `ALPACA_CAUTIOUS_*` |
+
+To add one: create a paper account in the Alpaca dashboard, reset it to $500, add its two keys to `.env`, add an entry to `strategies.json`. Strategies without keys show as "not configured" and are skipped. Every scheduled job runs `main.py --all`, so a new strategy starts at the next cycle with no reload.
 
 ## Setup
 
@@ -30,15 +43,15 @@ sudo pmset repeat wakeorpoweron MTWRF 08:25:00   # Central
 | `make logs` | follow `agent.log` |
 | `make dashboard` | dashboard in the foreground on port 3210 (`PORT=4000 make dashboard`) |
 | `make test` | Python self-checks + dashboard type-check |
-| `make dry-run` | one decision cycle, prints orders, submits nothing |
-| `make guard` | one guard pass, submits nothing |
-| `make run` | one **real** decision cycle now (paper orders, no summary) |
+| `make dry-run` | one decision cycle for `main`, prints orders, submits nothing (`S=luna` or `S=--all` to pick) |
+| `make guard` | one guard pass, submits nothing (`S=` as above) |
+| `make run` | one **real** decision cycle now (paper orders, no summary) (`S=` as above) |
 | `make install` | copy plists to `~/Library/LaunchAgents` and (re)load the jobs, after editing a schedule |
 | `make uninstall` | unload the jobs, keep the files |
 
 ## How it runs
 
-Three launchd jobs, all calling `main.py` in this directory and logging to `agent.log`:
+Three launchd jobs, all calling `main.py --all` in this directory (every configured strategy in turn) and logging to `agent.log`:
 
 | job | when (ET) | does |
 |---|---|---|
@@ -46,15 +59,15 @@ Three launchd jobs, all calling `main.py` in this directory and logging to `agen
 | `com.ies.trading-agent-retry` | 9:55, 12:40, 15:40 | reruns the decision only if no successful one landed in the last 20 min |
 | `com.ies.trading-agent-guard` | every 30 min | mechanical exits, no model call |
 
-A file lock (`.lock`) keeps runs from overlapping. Every run exits immediately when the market is closed.
+A per-strategy file lock keeps runs on the same account from overlapping. Every run exits immediately when the market is closed. The dashboard's admin table can run, halt, and resume any strategy.
 
-## Rules the code enforces
+## Rules the code enforces (defaults; each strategy may override)
 
 - Long only. Notional market orders, DAY, watchlist symbols only.
 - Max 20% of equity per symbol, 60% per sector, 5 orders per cycle, $1 minimum.
 - Daily loss stop: 3% below start-of-day equity blocks new buys until the next day.
-- Guards: sell at 8% below entry, sell at 10% below the position's peak, trim anything over the 20% cap.
-- Kill switches, checked at the daily summary: 20% drawdown on contributed capital, or 15 points behind the benchmark, write `HALT` and stop everything. Delete `HALT` to resume.
+- Guards: sell at 8% below entry, sell at 10% below the position's peak, trim anything over the position cap.
+- Kill switches, checked at the daily summary: 20% drawdown on contributed capital, or 15 points behind the benchmark, write `runs/<name>/HALT` and stop that strategy. Delete the file, or press resume in the dashboard, to continue.
 
 ## Scorekeeping
 
@@ -64,11 +77,12 @@ The benchmark is an equal-weight buy-and-hold of the watchlist. `benchmark.json`
 
 | file | purpose |
 |---|---|
-| `main.py` | the agent: decision cycle, guard, retry, summary |
+| `main.py` | the agent: decision cycle, guard, retry, summary, for one or all strategies |
+| `strategies.json`, `strategies.py` | strategy definitions (shared with the dashboard) and the dataclass that loads them |
 | `watchlist.py` | the 25 tickers with sector tags (source of truth; mirror in `dashboard/app/watchlist.ts`) |
-| `test_main.py` | self-checks for validation, guards, and the ledger |
+| `test_main.py` | self-checks for validation, guards, the ledger, and strategy overrides |
 | `com.ies.trading-agent*.plist` | launchd schedules |
-| `dashboard/` | Next.js dashboard; `/api/state` reads journal + Alpaca, `/api/run` triggers a run |
-| `journal.jsonl` | one line per run: equity, market view, placed, rejected, error |
-| `benchmark.json`, `peaks.json`, `HALT` | ledger, guard high-water marks, halt flag (all gitignored) |
+| `dashboard/` | Next.js dashboard; `/api/strategies` compares, `/api/state?strategy=` details, `/api/run` and `/api/halt` control |
+| `runs/<name>/journal.jsonl` | one line per run: kind, equity, market view, placed, rejected, error |
+| `runs/<name>/benchmark.json`, `peaks.json`, `HALT` | ledger, guard high-water marks, halt flag (`runs/` is gitignored) |
 | `docs/research/` | research notes behind the decisions |
