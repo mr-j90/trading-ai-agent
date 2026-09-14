@@ -19,7 +19,15 @@ body { margin: 0; background: var(--page); color: var(--ink); font: 13px/1.45 va
 button { font: inherit; color: var(--ink); background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 4px 10px; cursor: pointer; }
 button:hover:not(:disabled) { border-color: var(--series-1); }
 button:disabled { opacity: 0.5; cursor: default; }
-.runout { background: var(--surface); border: 1px solid var(--border); border-left: 3px solid var(--series-1); padding: 8px 12px; border-radius: 6px; margin-bottom: 12px; color: var(--ink-2); }
+.runout { background: var(--surface); border: 1px solid var(--border); border-left: 3px solid var(--muted); padding: 10px 14px; border-radius: 6px; margin-bottom: 12px; }
+.runout.traded { border-left-color: var(--series-1); }
+.runout.error { border-left-color: var(--down); }
+.runout p { margin: 8px 0 4px; color: var(--ink-2); }
+.runout ul { margin: 4px 0; padding-left: 16px; }
+.runout pre { white-space: pre-wrap; font: inherit; color: var(--ink-2); margin: 6px 0 0; }
+.runout details { margin-top: 6px; }
+.runout summary { cursor: pointer; }
+.runout button { padding: 0 8px; line-height: 1.4; }
 .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; background: var(--muted); }
 .dot.live { background: var(--up); box-shadow: 0 0 0 3px color-mix(in oklab, var(--up) 25%, transparent); }
 .dot.halted { background: var(--down); }

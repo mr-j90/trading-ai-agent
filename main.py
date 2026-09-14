@@ -230,7 +230,7 @@ def daily_summary(equity: float, cash: float, positions, today: list[dict], benc
 
 
 # ---------- cycle ----------
-def cycle(dry_run: bool) -> None:
+def cycle(dry_run: bool, summary: bool = True) -> None:
     if HALT.exists():
         print("halted:", HALT.read_text())
         return
@@ -282,7 +282,7 @@ def cycle(dry_run: bool) -> None:
     if dry_run:
         return
     append_journal(entry)
-    if clock.next_close - now <= SUMMARY_WINDOW:
+    if summary and clock.next_close - now <= SUMMARY_WINDOW:
         bench = benchmark_return(last_close) if last_close else None
         post_slack(daily_summary(equity, cash, positions, today + [entry], bench))
         if equity < KILL_EQUITY:
@@ -327,4 +327,4 @@ if __name__ == "__main__":
         if "--guard" in sys.argv:
             guard(dry_run="--dry-run" in sys.argv)
         else:
-            cycle(dry_run="--dry-run" in sys.argv)
+            cycle(dry_run="--dry-run" in sys.argv, summary="--no-summary" not in sys.argv)

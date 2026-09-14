@@ -48,13 +48,16 @@ export async function GET() {
     : null;
 
   const symbols = Object.keys(SECTOR_OF).join(",");
-  const [account, positions, history, snapshots] = await Promise.all([
+  const [account, positions, daily, intraday, snapshots] = await Promise.all([
     alpaca<any>(`${TRADING}/v2/account`),
     alpaca<any[]>(`${TRADING}/v2/positions`),
-    // ponytail: Alpaca allows intraday bars only for periods <= 30 days; switch to period=3M&timeframe=1D once the run is older
-    alpaca<any>(`${TRADING}/v2/account/portfolio/history?period=2W&timeframe=15Min&intraday_reporting=market_hours`),
+    // Alpaca quirk: multi-day intraday history returns P&L deltas in `equity`; only 1D intraday returns real equity.
+    // ponytail: period=3M covers the 8-week run; bump if it goes longer
+    alpaca<any>(`${TRADING}/v2/account/portfolio/history?period=3M&timeframe=1D`),
+    alpaca<any>(`${TRADING}/v2/account/portfolio/history?period=1D&timeframe=15Min&intraday_reporting=market_hours`),
     alpaca<Record<string, any>>(`${DATA}/v2/stocks/snapshots?symbols=${symbols}&feed=iex`),
   ]);
+  const points = (h: any): [number, number][] => (h.timestamp as number[]).map((t, i) => [t * 1000, h.equity[i]]);
 
   const last = (s: string) => snapshots[s]?.latestTrade?.p ?? snapshots[s]?.dailyBar?.c;
   let benchmarkReturn: number | null = null;
@@ -65,6 +68,8 @@ export async function GET() {
 
   const today = now.toISOString().slice(0, 10);
   const todayEntries = journal.filter((e) => e.ts.startsWith(today));
+  // history includes the account before the $500 reset; keep only the run (from the first journal entry's day)
+  const runStart = journal[0] ? new Date(journal[0].ts).setUTCHours(0, 0, 0, 0) : 0;
   return Response.json({
     now: now.toISOString(),
     equity: +account.equity,
@@ -75,7 +80,8 @@ export async function GET() {
     lastRun: journal.at(-1)?.ts ?? null,
     lastError: journal.at(-1)?.error ?? null,
     nextRun: halt ? null : nextRun(now),
-    curve: (history.timestamp as number[]).map((t, i) => [t * 1000, history.equity[i]]).filter(([, e]) => e != null),
+    curve: [...points(daily).filter(([t]) => t < (intraday.timestamp[0] ?? Infinity) * 1000), ...points(intraday)]
+      .filter(([t, e]) => e != null && e > 0 && t >= runStart),
     positions: positions.map((p) => ({
       symbol: p.symbol,
       sector: SECTOR_OF[p.symbol] ?? "other",

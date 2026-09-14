@@ -20,7 +20,7 @@ export default function Page() {
   const [s, setS] = useState<State | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [running, setRunning] = useState<string | null>(null);
-  const [runOut, setRunOut] = useState<string | null>(null);
+  const [runOut, setRunOut] = useState<RunResult | null>(null);
   const tick = () =>
     fetch("/api/state").then(async (r) => {
       if (!r.ok) throw new Error(await r.text());
@@ -37,8 +37,8 @@ export default function Page() {
     try {
       const r = await fetch("/api/run", { method: "POST", body: JSON.stringify({ job }) });
       const j = await r.json();
-      setRunOut(summarize(j.output));
-    } catch (e) { setRunOut(String(e)); }
+      setRunOut(parseRun(job, j.output));
+    } catch (e) { setRunOut({ job, text: String(e), at: new Date().toISOString() }); }
     setRunning(null); tick();
   };
 
@@ -57,7 +57,7 @@ export default function Page() {
           <span className="muted">updated {hhmm(s.now)}{err ? ` · refresh failed: ${err}` : ""}</span>
         </span>
       </header>
-      {runOut && <div className="runout">{runOut}</div>}
+      {runOut && <RunOutput r={runOut} onClose={() => setRunOut(null)} />}
       {s.halt && <div className="halt">⛔ halted: {s.halt}</div>}
 
       <section className="grid">
@@ -140,15 +140,45 @@ export default function Page() {
   );
 }
 
-/** Turn main.py's stdout into one line: a journal entry -> counts; anything else -> as is. */
-function summarize(out: string): string {
-  try {
-    const e = JSON.parse(out.slice(out.indexOf("{")));
-    if (e.error) return `run finished with error: ${e.error}`;
-    return `placed ${e.placed.length}, rejected ${e.rejected.length}${e.market_view ? ` — ${e.market_view}` : ""}`;
-  } catch {
-    return out || "no output";
+type RunResult = { job: string; at: string; entry?: Entry; text?: string };
+
+/** main.py prints a pretty JSON journal entry (indent=1, so it ends in "\n}") possibly followed by other text. */
+function parseRun(job: string, out: string): RunResult {
+  const start = out.indexOf("{"), end = out.indexOf("\n}", start);
+  if (start >= 0 && end > start) {
+    try {
+      const entry = JSON.parse(out.slice(start, end + 2));
+      const rest = out.slice(end + 2).trim();
+      return { job, at: entry.ts, entry, text: rest || undefined };
+    } catch { /* fall through */ }
   }
+  return { job, at: new Date().toISOString(), text: out.trim() || "no output" };
+}
+
+function RunOutput({ r, onClose }: { r: RunResult; onClose: () => void }) {
+  const e = r.entry;
+  const status = !e ? null : e.error ? "error" : e.placed.length ? "traded" : "held";
+  return (
+    <div className={`runout ${status ?? ""}`}>
+      <div className="row">
+        <span><b>{r.job === "guard" ? "Guard" : "Decision"} run</b> <span className="muted">· {new Date(r.at).toLocaleTimeString()}</span></span>
+        <span className="row" style={{ gap: 12 }}>
+          {e && <span className="muted">placed {e.placed.length} · rejected {e.rejected.length} · equity {usd(e.equity)}</span>}
+          <button onClick={onClose} aria-label="dismiss">×</button>
+        </span>
+      </div>
+      {e?.error && <div className="down">error: {e.error}</div>}
+      {e?.market_view && <p>{e.market_view}</p>}
+      {e && (e.placed.length + e.rejected.length > 0) && (
+        <ul>
+          {e.placed.map((o, i) => <li key={`p${i}`}><span className={o.side === "buy" ? "up" : "down"}>{o.side}</span> {usd(o.notional_usd)} <b>{o.symbol}</b> <span className="muted">— {o.reason}</span></li>)}
+          {e.rejected.map((o, i) => <li key={`r${i}`} className="muted">✗ {o.side} {usd(o.notional_usd)} {o.symbol} — {o.why}</li>)}
+        </ul>
+      )}
+      {e && status === "held" && <p className="muted">held, no orders</p>}
+      {r.text && (e ? <details><summary className="muted small">additional output</summary><pre>{r.text}</pre></details> : <p>{r.text}</p>)}
+    </div>
+  );
 }
 
 function Stat({ label, value, t = "" }: { label: string; value: string; t?: string }) {
