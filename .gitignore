@@ -6,3 +6,5 @@ journal.jsonl
 benchmark.json
 HALT
 agent.log
+peaks.json
+.lock

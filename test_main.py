@@ -1,6 +1,8 @@
 """Self-check for the money path. Run: uv run python test_main.py"""
 
-from main import MAX_ORDERS, Order, validate
+from types import SimpleNamespace as P
+
+from main import MAX_ORDERS, Order, guard_orders, validate
 
 equity, cash = 500.0, 300.0
 held = {"IESC": 150.0, "NVDA": 50.0}
@@ -35,5 +37,34 @@ assert len(placed) == MAX_ORDERS and len(rejected) == 2
 # below minimum, and inputs not mutated
 placed, rejected = validate([o("buy", "AAPL", 0.5)], cash, equity, held, False)
 assert rejected and held == {"IESC": 150.0, "NVDA": 50.0}
+
+# ---- guard: mechanical exits ----
+def pos(sym, entry, price, qty=1.0):
+    return P(symbol=sym, avg_entry_price=str(entry), current_price=str(price), market_value=str(price * qty), qty=str(qty))
+
+# stop-loss at -8% from entry beats the trailing stop when there was never a peak
+orders, peaks = guard_orders([pos("NVDA", 100, 92)], 500, {})
+assert len(orders) == 1 and orders[0].notional_usd == 92 and "stop-loss" in orders[0].reason
+assert peaks == {"NVDA": 100}
+
+# -7% holds
+orders, _ = guard_orders([pos("NVDA", 100, 93)], 500, {})
+assert orders == []
+
+# trailing: peaked at 150, now 135 -> sell; at 136 -> hold; peak only ever rises
+orders, peaks = guard_orders([pos("GOOGL", 100, 135, 0.5)], 500, {"GOOGL": 150})
+assert len(orders) == 1 and "trailing" in orders[0].reason and peaks["GOOGL"] == 150
+orders, peaks = guard_orders([pos("GOOGL", 100, 136, 0.5)], 500, {"GOOGL": 150})
+assert orders == [] and peaks["GOOGL"] == 150
+_, peaks = guard_orders([pos("GOOGL", 100, 160, 0.5)], 500, {"GOOGL": 150})
+assert peaks["GOOGL"] == 160
+
+# trim: $150 position on $550 equity, cap $110 -> sell $40
+orders, _ = guard_orders([pos("META", 100, 150)], 550, {})
+assert len(orders) == 1 and orders[0].notional_usd == 40 and "trim" in orders[0].reason
+
+# a closed position drops out of peaks
+_, peaks = guard_orders([pos("META", 100, 100)], 500, {"GOOGL": 150})
+assert peaks == {"META": 100}
 
 print("ok")

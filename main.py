@@ -1,8 +1,12 @@
-"""One trading cycle. Run 3x/day by launchd; see com.ies.trading-agent.plist.
+"""Trading agent. Two entry points, both scheduled by launchd:
+
+  main.py           decision cycle, 3x/day (com.ies.trading-agent.plist): asks the model, places orders
+  main.py --guard   mechanical exits, every 30 min (com.ies.trading-agent-guard.plist): no model call
 
 Decisions locked on the wayfinder map: https://github.com/mr-j90/trading-ai-agent/issues/1
 """
 
+import fcntl
 import json
 import os
 import sys
@@ -35,6 +39,8 @@ START_EQUITY = 500.0
 MAX_POSITION_PCT = 0.20
 DAILY_STOP_PCT = 0.03
 MAX_ORDERS = 5
+STOP_LOSS_PCT = 0.08  # from entry
+TRAILING_STOP_PCT = 0.10  # from the position's peak price
 KILL_EQUITY = 400.0
 KILL_BENCHMARK_GAP = 0.15
 SUMMARY_WINDOW = timedelta(minutes=90)
@@ -44,7 +50,9 @@ UTC = timezone.utc
 ROOT = Path(__file__).parent
 JOURNAL = ROOT / "journal.jsonl"
 BENCHMARK = ROOT / "benchmark.json"
+PEAKS = ROOT / "peaks.json"  # symbol -> highest price seen while held
 HALT = ROOT / "HALT"
+LOCK = ROOT / ".lock"
 
 
 class Order(BaseModel):
@@ -65,7 +73,11 @@ Hard limits enforced by code (orders that break them are dropped and shown to yo
 - max {MAX_POSITION_PCT:.0%} of equity in any one symbol; buys limited to available cash
 - no buys after equity falls {DAILY_STOP_PCT:.0%} below start-of-day; sells always allowed
 - at most {MAX_ORDERS} orders per cycle; sell notional cannot exceed the position's market value
-Return an empty orders list to hold. Be selective: trading costs nothing here but churn rarely helps.
+Code also runs mechanical exits every 30 minutes without you: sell a position {STOP_LOSS_PCT:.0%} below entry,
+sell {TRAILING_STOP_PCT:.0%} below its peak price, trim anything above the position cap. Do not duplicate those;
+spend your attention on entries and on selling when a thesis has broken.
+Return an empty orders list to hold. Hold unless something changed since your last entry: trading costs nothing
+here but churn rarely helps, and chasing an intraday move that already happened is churn.
 market_view is your journal entry: 2-4 sentences on what you see and why you acted or held."""
 
 
@@ -137,6 +149,23 @@ def validate(orders: list[Order], cash: float, equity: float, market_value: dict
         else:  # sale proceeds are not spent in the same cycle
             mv[o.symbol] -= o.notional_usd
     return placed, rejected
+
+
+def guard_orders(positions, equity: float, peaks: dict[str, float]) -> tuple[list[Order], dict[str, float]]:
+    """Pure. Mechanical exits: stop-loss from entry, trailing stop from peak, trim to cap. Returns (orders, new_peaks)."""
+    cap = MAX_POSITION_PCT * equity
+    orders, new_peaks = [], {}
+    for p in positions:
+        price, entry, mv = float(p.current_price), float(p.avg_entry_price), float(p.market_value)
+        peak = max(peaks.get(p.symbol, entry), price)
+        new_peaks[p.symbol] = peak
+        if price <= entry * (1 - STOP_LOSS_PCT):
+            orders.append(Order(symbol=p.symbol, side="sell", notional_usd=mv, reason=f"stop-loss: {price / entry - 1:.1%} from entry {entry:.2f}"))
+        elif price <= peak * (1 - TRAILING_STOP_PCT):
+            orders.append(Order(symbol=p.symbol, side="sell", notional_usd=mv, reason=f"trailing stop: {price / peak - 1:.1%} from peak {peak:.2f}"))
+        elif mv - cap >= 1:
+            orders.append(Order(symbol=p.symbol, side="sell", notional_usd=round(mv - cap, 2), reason=f"trim to {MAX_POSITION_PCT:.0%} cap (${cap:.0f})"))
+    return orders, new_peaks
 
 
 def submit(o: Order, market_value: dict[str, float]):
@@ -258,5 +287,40 @@ def cycle(dry_run: bool) -> None:
             halt(f"{(equity / START_EQUITY - 1 - bench) * 100:.1f} pts behind benchmark")
 
 
+def guard(dry_run: bool) -> None:
+    if HALT.exists():
+        return
+    if not trading.get_clock().is_open:
+        return
+    now = datetime.now(UTC)
+    positions = trading.get_all_positions()
+    account = trading.get_account()
+    peaks = json.loads(PEAKS.read_text()) if PEAKS.exists() else {}
+    orders, peaks = guard_orders(positions, float(account.equity), peaks)
+    if not dry_run:
+        PEAKS.write_text(json.dumps(peaks, indent=1))
+    if not orders:
+        print(f"guard {now:%H:%M}Z: {len(positions)} positions, nothing to do")
+        return
+    market_value = {p.symbol: float(p.market_value) for p in positions}
+    entry = {"ts": now.isoformat(), "equity": float(account.equity), "cash": float(account.buying_power),
+             "market_view": "guard: " + "; ".join(f"{o.symbol} {o.reason}" for o in orders), "placed": [], "rejected": [], "error": None}
+    try:
+        for o in orders:
+            if not dry_run:
+                submit(o, market_value)
+        entry["placed"] = [o.model_dump() for o in orders]
+    except Exception as e:
+        entry["error"] = repr(e)
+    print(json.dumps(entry, indent=1, default=str))
+    if not dry_run:
+        append_journal(entry)
+
+
 if __name__ == "__main__":
-    cycle(dry_run="--dry-run" in sys.argv)
+    with LOCK.open("w") as lock:  # a guard and a decision cycle must not overlap
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        if "--guard" in sys.argv:
+            guard(dry_run="--dry-run" in sys.argv)
+        else:
+            cycle(dry_run="--dry-run" in sys.argv)

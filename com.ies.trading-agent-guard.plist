@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.ies.trading-agent-guard</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/bin/caffeinate</string><string>-is</string>
+    <string>/Users/jordan/.local/bin/uv</string><string>run</string><string>--frozen</string><string>main.py</string><string>--guard</string>
+  </array>
+  <key>WorkingDirectory</key><string>/Users/jordan/Developer/trading-ai-agent</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key><string>/Users/jordan/.local/bin:/usr/local/bin:/usr/bin:/bin</string>
+    <key>PYTHONUNBUFFERED</key><string>1</string>
+  </dict>
+  <!-- every 30 min around the clock; the run exits immediately when the market is closed -->
+  <key>StartInterval</key><integer>1800</integer>
+  <key>ProcessType</key><string>Interactive</string>
+  <key>StandardOutPath</key><string>/Users/jordan/Developer/trading-ai-agent/agent.log</string>
+  <key>StandardErrorPath</key><string>/Users/jordan/Developer/trading-ai-agent/agent.log</string>
+</dict>
+</plist>
