@@ -62,6 +62,8 @@ Three launchd jobs, all calling `main.py --all` in this directory (every configu
 | `com.ies.trading-agent-retry` | 9:55, 12:40, 15:40 | reruns the decision only if no successful one landed in the last 20 min |
 | `com.ies.trading-agent-guard` | every 30 min | mechanical exits, no model call |
 
+A fourth job, `com.ies.trading-agent-bot`, keeps `bot.py` running: a Telegram command bot that answers only the configured chat. `/status` (equity, day change, return, positions per strategy), `/positions [name]`, `/log [name]`, `/halt <name>`, `/resume <name>`, `/run <name>` (starts a decision cycle), `/help`. Every decision cycle, guard exit, and error also pushes a short Telegram message, and the 15:30 run sends the daily summary.
+
 A per-strategy file lock keeps runs on the same account from overlapping. Every run exits immediately when the market is closed. The dashboard's admin table can run, halt, and resume any strategy.
 
 ## Rules the code enforces (defaults; each strategy may override)
@@ -81,6 +83,7 @@ The benchmark is an equal-weight buy-and-hold of the watchlist. `benchmark.json`
 | file | purpose |
 |---|---|
 | `main.py` | the agent: decision cycle, guard, retry, summary, for one or all strategies |
+| `bot.py` | Telegram command bot (long-polling, keep-alive launchd job, logs to `bot.log`) |
 | `strategies.json`, `strategies.py` | strategy definitions (shared with the dashboard) and the dataclass that loads them |
 | `watchlist.py` | the 25 tickers with sector tags (source of truth; mirror in `dashboard/app/watchlist.ts`) |
 | `test_main.py` | self-checks for validation, guards, the ledger, and strategy overrides |

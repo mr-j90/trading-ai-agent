@@ -30,7 +30,7 @@ from dotenv import load_dotenv
 from openai import OpenAI
 from pydantic import BaseModel
 
-from strategies import STRATEGIES, Strategy
+from strategies import ROOT, RUNS, STRATEGIES, Strategy
 
 load_dotenv()
 # market data is account-agnostic: data clients on the main keys serve every strategy
@@ -251,6 +251,16 @@ def apply_deposit(ledger: dict, amount: float, prices: dict[str, float]) -> dict
 
 def benchmark_value(ledger: dict, prices: dict[str, float]) -> float:
     return sum(u * prices[s] for s, u in ledger["units"].items() if s in prices)
+
+
+def read_ledger_value(S: Strategy) -> tuple[float, float | None]:
+    """(contributed, benchmark value at current prices) from the saved ledger, without touching deposits. For /status."""
+    p = S.dir / "benchmark.json"
+    if not p.exists():
+        return S.start_equity, None
+    ledger = json.loads(p.read_text())
+    _, prices = market_snapshot(S, datetime.now(UTC))
+    return ledger["contributed"], benchmark_value(ledger, prices)
 
 
 def sync_ledger(S: Strategy, prices: dict[str, float]) -> dict:

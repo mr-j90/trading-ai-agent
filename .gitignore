@@ -5,3 +5,4 @@ __pycache__/
 runs/
 agent.log
 dashboard.log
+bot.log

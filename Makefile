@@ -1,5 +1,5 @@
 UID := $(shell id -u)
-JOBS := com.ies.trading-agent com.ies.trading-agent-retry com.ies.trading-agent-guard
+JOBS := com.ies.trading-agent com.ies.trading-agent-retry com.ies.trading-agent-guard com.ies.trading-agent-bot
 PORT ?= 3210
 
 .PHONY: help up down dashboard test dry-run guard run status logs install uninstall
@@ -7,7 +7,7 @@ PORT ?= 3210
 help:  ## list targets
 	@grep -E '^[a-z-]+:.*##' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-10s %s\n", $$1, $$2}'
 
-up: install  ## everything on: load the 3 launchd jobs + dashboard in the background
+up: install  ## everything on: load the 4 launchd jobs (3 schedules + telegram bot) + dashboard in the background
 	@if lsof -ti tcp:$(PORT) >/dev/null; then echo "dashboard already running on http://localhost:$(PORT)"; \
 	else (cd dashboard && nohup npm run dev -- --port $(PORT) > ../dashboard.log 2>&1 &); echo "dashboard starting on http://localhost:$(PORT) (log: dashboard.log)"; fi
 

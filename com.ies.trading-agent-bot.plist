@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.ies.trading-agent-bot</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/jordan/.local/bin/uv</string><string>run</string><string>--frozen</string><string>bot.py</string>
+  </array>
+  <key>WorkingDirectory</key><string>/Users/jordan/Developer/trading-ai-agent</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key><string>/Users/jordan/.local/bin:/usr/local/bin:/usr/bin:/bin</string>
+    <key>PYTHONUNBUFFERED</key><string>1</string>
+  </dict>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>ThrottleInterval</key><integer>10</integer>
+  <key>StandardOutPath</key><string>/Users/jordan/Developer/trading-ai-agent/bot.log</string>
+  <key>StandardErrorPath</key><string>/Users/jordan/Developer/trading-ai-agent/bot.log</string>
+</dict>
+</plist>
