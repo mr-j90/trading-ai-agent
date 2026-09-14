@@ -35,7 +35,8 @@ run:  ## one REAL decision cycle for $(S) now (places paper orders, no summary)
 
 status:  ## launchd job states and each strategy's last journal entry
 	@for j in $(JOBS); do printf "%-32s" $$j; launchctl print gui/$(UID)/$$j 2>/dev/null | awk '/^\t(state|runs|last exit code) =/{printf "%s ", $$0}'; echo; done
-	@for d in runs/*/; do n=$$(basename $$d); [ -f $$d/HALT ] && h=" HALTED" || h=""; printf "%-10s%s " $$n "$$h"; tail -n 1 $$d/journal.jsonl 2>/dev/null | python3 -c 'import sys,json; [print(e["ts"][:16], e.get("kind","cycle"), "placed", len(e["placed"]), "err" if e["error"] else "", (e["market_view"] or "")[:60]) for e in map(json.loads, sys.stdin)]' || echo "no runs"; done
+	@for d in runs/*/; do n=$$(basename $$d); [ -f $$d/HALT ] && h=" HALTED" || h=""; printf "%-10s%s " $$n "$$h"; \
+	  if [ -s $$d/journal.jsonl ]; then tail -n 1 $$d/journal.jsonl | python3 -c 'import sys,json; [print(e["ts"][:16], e.get("kind","cycle"), "placed", len(e["placed"]), "err" if e["error"] else "", (e["market_view"] or "")[:60]) for e in map(json.loads, sys.stdin)]'; else echo "no runs"; fi; done
 
 logs:  ## follow agent.log
 	tail -f agent.log
