@@ -19,18 +19,28 @@ const hhmm = (iso: string) => new Date(iso).toLocaleTimeString("en-US", { hour: 
 export default function Page() {
   const [s, setS] = useState<State | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  const [running, setRunning] = useState<string | null>(null);
+  const [runOut, setRunOut] = useState<string | null>(null);
+  const tick = () =>
+    fetch("/api/state").then(async (r) => {
+      if (!r.ok) throw new Error(await r.text());
+      setS(await r.json()); setErr(null);
+    }).catch((e) => setErr(String(e)));
   useEffect(() => {
-    let alive = true;
-    const tick = () =>
-      fetch("/api/state").then(async (r) => {
-        if (!alive) return;
-        if (!r.ok) throw new Error(await r.text());
-        setS(await r.json()); setErr(null);
-      }).catch((e) => alive && setErr(String(e)));
     tick();
     const id = setInterval(tick, POLL_MS);
-    return () => { alive = false; clearInterval(id); };
+    return () => clearInterval(id);
   }, []);
+  const run = async (job: "cycle" | "guard") => {
+    if (job === "cycle" && !confirm("Run a decision cycle now? The model may place paper orders.")) return;
+    setRunning(job); setRunOut(null);
+    try {
+      const r = await fetch("/api/run", { method: "POST", body: JSON.stringify({ job }) });
+      const j = await r.json();
+      setRunOut(summarize(j.output));
+    } catch (e) { setRunOut(String(e)); }
+    setRunning(null); tick();
+  };
 
   if (!s) return <main className="wrap"><p className="muted">{err ?? "loading…"}</p></main>;
   const sinceStart = s.equity / START - 1;
@@ -41,8 +51,13 @@ export default function Page() {
     <main className="wrap">
       <header className="bar">
         <span><span className={`dot ${s.halt ? "halted" : "live"}`} /> trading agent · paper · {s.halt ? "HALTED" : "live"}</span>
-        <span className="muted">updated {hhmm(s.now)}{err ? ` · refresh failed: ${err}` : ""}</span>
+        <span className="actions">
+          <button onClick={() => run("cycle")} disabled={!!running || !!s.halt}>{running === "cycle" ? "running…" : "▶ run decision now"}</button>
+          <button onClick={() => run("guard")} disabled={!!running || !!s.halt}>{running === "guard" ? "running…" : "run guard"}</button>
+          <span className="muted">updated {hhmm(s.now)}{err ? ` · refresh failed: ${err}` : ""}</span>
+        </span>
       </header>
+      {runOut && <div className="runout">{runOut}</div>}
       {s.halt && <div className="halt">⛔ halted: {s.halt}</div>}
 
       <section className="grid">
@@ -123,6 +138,17 @@ export default function Page() {
       </section>
     </main>
   );
+}
+
+/** Turn main.py's stdout into one line: a journal entry -> counts; anything else -> as is. */
+function summarize(out: string): string {
+  try {
+    const e = JSON.parse(out.slice(out.indexOf("{")));
+    if (e.error) return `run finished with error: ${e.error}`;
+    return `placed ${e.placed.length}, rejected ${e.rejected.length}${e.market_view ? ` — ${e.market_view}` : ""}`;
+  } catch {
+    return out || "no output";
+  }
 }
 
 function Stat({ label, value, t = "" }: { label: string; value: string; t?: string }) {

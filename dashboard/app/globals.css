@@ -15,6 +15,11 @@
 body { margin: 0; background: var(--page); color: var(--ink); font: 13px/1.45 var(--font-mono), ui-monospace, monospace; }
 .wrap { max-width: 1400px; margin: 0 auto; padding: 16px; }
 .bar { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8px; padding: 4px 0 12px; text-transform: uppercase; letter-spacing: 0.06em; font-size: 12px; }
+.actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; text-transform: none; letter-spacing: 0; }
+button { font: inherit; color: var(--ink); background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 4px 10px; cursor: pointer; }
+button:hover:not(:disabled) { border-color: var(--series-1); }
+button:disabled { opacity: 0.5; cursor: default; }
+.runout { background: var(--surface); border: 1px solid var(--border); border-left: 3px solid var(--series-1); padding: 8px 12px; border-radius: 6px; margin-bottom: 12px; color: var(--ink-2); }
 .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; background: var(--muted); }
 .dot.live { background: var(--up); box-shadow: 0 0 0 3px color-mix(in oklab, var(--up) 25%, transparent); }
 .dot.halted { background: var(--down); }
