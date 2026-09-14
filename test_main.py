@@ -2,7 +2,7 @@
 
 from types import SimpleNamespace as P
 
-from main import Order, apply_deposit, benchmark_value, guard_orders, validate
+from main import Order, apply_deposit, benchmark_value, cost_usd, features, guard_orders, validate
 from strategies import STRATEGIES, Strategy
 
 S = STRATEGIES["main"]
@@ -102,6 +102,19 @@ assert [p.symbol for p in placed] == ["BTC/USD", "ETH/USD", "SOL/USD"]
 orders, peaks = guard_orders(X, [pos("BTCUSD", 80000, 70000, 0.002)], 500, {})
 assert orders[0].symbol == "BTC/USD" and "stop-loss" in orders[0].reason and peaks == {"BTC/USD": 80000}
 assert guard_orders(X, [pos("BTCUSD", 80000, 71000, 0.002)], 500, {})[0] == []
+
+# ---- features: 60 days rising 1/day from 100, flat volume, last = 161 ----
+closes = [100.0 + i for i in range(60)]  # 100..159
+f = features(closes, [1000.0] * 60 + [2000.0], 161.0)
+assert f["last"] == 161 and f["chg_1d_pct"] == round((161 / 158 - 1) * 100, 2) and f["chg_20d_pct"] == round((161 / 139 - 1) * 100, 2)
+assert f["ma20"] == 149.5 and f["ma50"] == 134.5 and f["above_ma20"] and f["above_ma50"]
+assert f["from_20d_high_pct"] == round((161 / 159 - 1) * 100, 2) and f["from_20d_low_pct"] == round((161 / 140 - 1) * 100, 2)
+assert f["volume_vs_20d_avg"] == 2.0 and f["daily_vol_20d_pct"] is not None
+# short history degrades gracefully
+f = features([10.0, 11.0], [5.0, 5.0], 12.0)
+assert f["chg_1d_pct"] == 20.0 and f["chg_5d_pct"] is None and f["ma20"] is None and f["above_ma50"] is None
+# cost: 30k in / 2k out on terra = 0.06 + 0.024
+assert cost_usd("gpt-5.6-terra", 30_000, 2_000) == 0.084 and cost_usd("unknown", 1, 1) is None
 
 # ---- strategies.json shape ----
 assert set(STRATEGIES) >= {"main", "luna", "momentum", "cautious", "crypto"}

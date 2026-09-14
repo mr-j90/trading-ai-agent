@@ -2,7 +2,7 @@
 import { useEffect, useState } from "react";
 
 type Position = { symbol: string; sector: string; qty: number; marketValue: number; price: number; unrealizedPl: number; unrealizedPlpc: number; dayChangePc: number };
-type Entry = { ts: string; equity: number; market_view: string; placed: any[]; rejected: any[]; error: string | null };
+type Entry = { ts: string; kind?: string; equity: number; market_view: string; placed: any[]; rejected: any[]; error: string | null; tokens_in?: number; tokens_out?: number; cost_usd?: number };
 type StrategyCfg = { name: string; description?: string; model: string; reasoning: string; max_position_pct: number; max_sector_pct: number; daily_stop_pct: number; max_orders: number; stop_loss_pct: number; trailing_stop_pct: number; ends: string; key_env: string };
 type State = {
   configured: boolean; strategy: StrategyCfg;
@@ -12,7 +12,7 @@ type State = {
 };
 type Row = {
   name: string; description: string; model: string; ends: string; halt: string | null; configured: boolean; ended: boolean;
-  lastRun: string | null; lastError: string | null; cycles: number; trades: number; guardExits: number; rejected: number; errors: number;
+  lastRun: string | null; lastError: string | null; cycles: number; trades: number; guardExits: number; rejected: number; errors: number; cost: number;
   equity: number | null; dayChange?: number; contributed: number; benchmarkValue: number | null; positions: number;
 };
 
@@ -74,7 +74,7 @@ export default function Page() {
           <table>
             <thead><tr>
               <th>strategy</th><th>model</th><th>status</th><th className="r">equity</th><th className="r">today</th><th className="r">return</th><th className="r">vs bench</th>
-              <th className="r">pos</th><th className="r">cycles</th><th className="r">trades</th><th className="r">guard</th><th className="r">rejected</th><th className="r">errors</th><th>last run</th><th></th>
+              <th className="r">pos</th><th className="r">cycles</th><th className="r">trades</th><th className="r">guard</th><th className="r">rejected</th><th className="r">errors</th><th className="r">model $</th><th>last run</th><th></th>
             </tr></thead>
             <tbody>
               {rows.map((r) => {
@@ -93,6 +93,7 @@ export default function Page() {
                     <td className={`r ${tone(gap)}`}>{gap == null ? "–" : `${(gap * 100).toFixed(1)} pts`}</td>
                     <td className="r">{r.positions}</td><td className="r">{r.cycles}</td><td className="r">{r.trades}</td><td className="r">{r.guardExits}</td>
                     <td className="r">{r.rejected}</td><td className={`r ${r.errors ? "down" : ""}`}>{r.errors}</td>
+                    <td className="r muted" title="model spend, all time, from token usage">{r.cost ? `$${r.cost.toFixed(2)}` : "–"}</td>
                     <td className="muted">{r.lastRun ? new Date(r.lastRun).toLocaleString([], { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "never"}</td>
                     <td className="actions" onClick={(e) => e.stopPropagation()}>
                       <button onClick={() => run("cycle", r.name)} disabled={busy(r.name)} title="run a decision cycle now">{running === `${r.name}:cycle` ? "…" : "▶"}</button>
@@ -191,21 +192,67 @@ function Detail({ s, sel }: { s: State; sel: string }) {
         <div className="card log">
           <div className="label">Decision log</div>
           {s.journal.length === 0 && <p className="muted">no cycles yet</p>}
-          {s.journal.map((e) => (
-            <article key={e.ts} className="entry">
-              <div className="row"><b>{new Date(e.ts).toLocaleString()}</b><span className="muted">{e.equity ? `equity ${usd(e.equity)}` : "run failed before reaching the account"}</span></div>
-              {e.error && <div className="down">error: {e.error}</div>}
-              <p>{e.market_view || <span className="muted">no view recorded</span>}</p>
-              <ul>
-                {e.placed.map((o, i) => <li key={`p${i}`}><span className={o.side === "buy" ? "up" : "down"}>{o.side}</span> {usd(o.notional_usd)} <b>{o.symbol}</b> <span className="muted">— {o.reason}</span></li>)}
-                {e.rejected.map((o, i) => <li key={`r${i}`} className="muted">✗ {o.side} {usd(o.notional_usd)} {o.symbol} — {o.why}</li>)}
-                {!e.placed.length && !e.rejected.length && <li className="muted">held</li>}
-              </ul>
-            </article>
-          ))}
+          {s.journal.map((e) => <JournalEntry key={e.ts} e={e} strategy={sel} />)}
         </div>
       </section>
     </>
+  );
+}
+
+function JournalEntry({ e, strategy }: { e: Entry; strategy: string }) {
+  const [saw, setSaw] = useState<any | null | "loading" | string>(null);
+  const load = async () => {
+    setSaw("loading");
+    const r = await fetch(`/api/prompt?strategy=${strategy}&ts=${encodeURIComponent(e.ts)}`);
+    setSaw(r.ok ? await r.json() : (await r.json()).error);
+  };
+  const isCycle = (e.kind ?? "cycle") === "cycle";
+  return (
+    <article className="entry">
+      <div className="row">
+        <b>{new Date(e.ts).toLocaleString()} {e.kind === "guard" && <span className="badge">guard</span>}</b>
+        <span className="muted">
+          {e.equity ? `equity ${usd(e.equity)}` : "run failed before reaching the account"}
+          {e.cost_usd != null && ` · ${e.tokens_in?.toLocaleString()} in / ${e.tokens_out?.toLocaleString()} out · $${e.cost_usd.toFixed(4)}`}
+          {isCycle && e.equity && !e.error && <> · <a href="#" onClick={(ev) => { ev.preventDefault(); saw && saw !== "loading" ? setSaw(null) : load(); }}>{saw && saw !== "loading" ? "hide" : "what it saw"}</a></>}
+        </span>
+      </div>
+      {e.error && <div className="down">error: {e.error}</div>}
+      <p>{e.market_view || <span className="muted">no view recorded</span>}</p>
+      <ul>
+        {e.placed.map((o, i) => <li key={`p${i}`}><span className={o.side === "buy" ? "up" : "down"}>{o.side}</span> {usd(o.notional_usd)} <b>{o.symbol}</b> <span className="muted">— {o.reason}</span></li>)}
+        {e.rejected.map((o, i) => <li key={`r${i}`} className="muted">✗ {o.side} {usd(o.notional_usd)} {o.symbol} — {o.why}</li>)}
+        {!e.placed.length && !e.rejected.length && <li className="muted">held</li>}
+      </ul>
+      {saw === "loading" && <p className="muted small">loading…</p>}
+      {typeof saw === "string" && saw !== "loading" && <p className="muted small">{saw}</p>}
+      {saw && typeof saw === "object" && <Saw p={saw} />}
+    </article>
+  );
+}
+
+/** The model's input for one cycle: features table, positions, news, and the instructions. */
+function Saw({ p }: { p: any }) {
+  const m: Record<string, any> = p.input?.market ?? {};
+  const cols: [string, string][] = [["last", "last"], ["1d", "chg_1d_pct"], ["5d", "chg_5d_pct"], ["20d", "chg_20d_pct"], ["vs 20d hi", "from_20d_high_pct"], ["vs 20d lo", "from_20d_low_pct"], ["ma20", "above_ma20"], ["ma50", "above_ma50"], ["vol20", "daily_vol_20d_pct"], ["vol×", "volume_vs_20d_avg"]];
+  const cell = (v: any) => v == null ? "–" : typeof v === "boolean" ? (v ? "▲" : "▼") : typeof v === "number" ? v.toLocaleString(undefined, { maximumFractionDigits: 2 }) : String(v);
+  return (
+    <div className="saw">
+      <div className="muted small">{p.model} · reasoning {p.reasoning} · {p.input?.market_hours} · cash {usd(p.input?.cash ?? 0)} · buys {p.input?.buys_blocked ? "blocked" : "allowed"}</div>
+      <div className="scroll">
+        <table className="small">
+          <thead><tr><th>symbol</th>{cols.map(([h]) => <th key={h} className="r">{h}</th>)}</tr></thead>
+          <tbody>{Object.entries(m).map(([sym, f]) => (
+            <tr key={sym}><td><b>{sym}</b> <span className="muted">{f.sector}</span></td>
+              {cols.map(([, k]) => <td key={k} className={`r ${k.startsWith("chg") || k.startsWith("from") ? tone(f[k] ?? null) : k.startsWith("above") ? (f[k] ? "up" : f[k] === false ? "down" : "") : ""}`}>{cell(f[k])}{k.startsWith("chg") || k.startsWith("from") || k === "daily_vol_20d_pct" ? (f[k] == null ? "" : "%") : ""}</td>)}
+            </tr>
+          ))}</tbody>
+        </table>
+      </div>
+      {!!p.input?.positions?.length && <div className="small"><span className="muted">positions:</span> {p.input.positions.map((x: any) => `${x.symbol} $${(+x.market_value).toFixed(0)} (pl ${(+x.unrealized_pl).toFixed(2)})`).join(", ")}</div>}
+      <details><summary className="muted small">news in prompt ({p.input?.news_24h?.length ?? 0})</summary><ul className="small">{(p.input?.news_24h ?? []).map((n: string, i: number) => <li key={i}>{n}</li>)}</ul></details>
+      <details><summary className="muted small">instructions</summary><pre className="small">{p.instructions}</pre></details>
+    </div>
   );
 }
 

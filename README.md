@@ -58,7 +58,7 @@ Three launchd jobs, all calling `main.py --all` in this directory (every configu
 
 | job | when (ET) | does |
 |---|---|---|
-| `com.ies.trading-agent` | 9:45, 12:30, 15:30 | decision cycle: market clock gate, bars + news for the watchlist, model returns dollar-sized market orders, code validates and submits, journal entry; the 15:30 run sends the Telegram summary |
+| `com.ies.trading-agent` | 9:45, 12:30, 15:30 | decision cycle: market clock gate, per-symbol features (1/5/20-day change, distance from 20-day high/low, 20/50-day MAs, volatility, volume ratio) + recent closes + news, model returns dollar-sized market orders, code validates and submits, journal entry; the 15:30 run sends the Telegram summary |
 | `com.ies.trading-agent-retry` | 9:55, 12:40, 15:40 | reruns the decision only if no successful one landed in the last 20 min |
 | `com.ies.trading-agent-guard` | every 30 min | mechanical exits, no model call |
 
@@ -86,6 +86,7 @@ The benchmark is an equal-weight buy-and-hold of the watchlist. `benchmark.json`
 | `test_main.py` | self-checks for validation, guards, the ledger, and strategy overrides |
 | `com.ies.trading-agent*.plist` | launchd schedules |
 | `dashboard/` | Next.js dashboard; `/api/strategies` compares, `/api/state?strategy=` details, `/api/run` and `/api/halt` control |
-| `runs/<name>/journal.jsonl` | one line per run: kind, equity, market view, placed, rejected, error |
+| `runs/<name>/journal.jsonl` | one line per run: kind, equity, market view, placed, rejected, error, tokens and model cost |
+| `runs/<name>/prompts/*.json` | the full input (features, positions, news, instructions) and output of every decision cycle; the dashboard's "what it saw" |
 | `runs/<name>/benchmark.json`, `peaks.json`, `HALT` | ledger, guard high-water marks, halt flag (`runs/` is gitignored) |
 | `docs/research/` | research notes behind the decisions |

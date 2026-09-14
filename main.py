@@ -50,6 +50,13 @@ def trading(S: Strategy) -> TradingClient:
 
 SUMMARY_WINDOW = timedelta(minutes=90)
 SUMMARY_HOUR_ET = 15  # 24/7 strategies: the run at/after this ET hour is the day's last
+# $ per 1M tokens (input, output), from docs/research/openai-sdk.md on 2026-09-14. ponytail: re-check when OpenAI moves prices.
+PRICES = {"gpt-6-astra": (10, 50), "gpt-5.6-sol": (4, 20), "gpt-5.6-terra": (2, 12), "gpt-5.6-luna": (0.20, 1.20)}
+
+
+def cost_usd(model: str, tokens_in: int, tokens_out: int) -> float | None:
+    p = PRICES.get(model)
+    return round((tokens_in * p[0] + tokens_out * p[1]) / 1e6, 4) if p else None
 UTC = timezone.utc
 ET = ZoneInfo("America/New_York")
 
@@ -70,6 +77,8 @@ def instructions(S: Strategy) -> str:
     what = "crypto" if S.crypto else "US equities"
     return f"""You manage a small long-only {what} paper account, starting equity ${S.start_equity:.0f}.
 You may only trade the watchlist symbols given, spelled exactly as given. Orders are dollar-sized market orders that fill immediately.
+For each symbol you get computed features (percent changes, distance from the 20-day high/low, 20/50-day moving averages,
+20-day volatility, today's volume vs its 20-day average) plus the last 10 daily closes and today's 30-minute closes.
 Hard limits enforced by code (orders that break them are dropped and shown to you next cycle):
 - max {S.max_position_pct:.0%} of equity in any one symbol and {S.max_sector_pct:.0%} in any one sector; buys limited to available cash
 - no buys after equity falls {S.daily_stop_pct:.0%} below start-of-day; sells always allowed
@@ -103,20 +112,53 @@ def bars(S: Strategy, timeframe: TimeFrame, start: datetime) -> dict:
     return data.get_stock_bars(StockBarsRequest(symbol_or_symbols=S.symbols, timeframe=timeframe, start=start)).data
 
 
-def market_snapshot(S: Strategy, now: datetime) -> tuple[str, dict[str, float]]:
-    daily = bars(S, TimeFrame.Day, now - timedelta(days=45))
+def features(closes: list[float], volumes: list[float], last: float) -> dict:
+    """Pure. What a chart reader looks for, as numbers. `closes` oldest->newest daily closes (>= 2), `last` the latest price."""
+    c = closes
+    pct = lambda a, b: round((a / b - 1) * 100, 2) if b else None
+    ma = lambda n: round(sum(c[-n:]) / n, 2) if len(c) >= n else None
+    win = c[-20:]
+    rets = [c[i] / c[i - 1] - 1 for i in range(max(1, len(c) - 20), len(c))]
+    mean = sum(rets) / len(rets) if rets else 0
+    vol = round((sum((r - mean) ** 2 for r in rets) / len(rets)) ** 0.5 * 100, 2) if len(rets) > 1 else None
+    v20 = volumes[-21:-1]
+    return {
+        "last": round(last, 2),
+        "chg_1d_pct": pct(last, c[-2]) if len(c) >= 2 else None,
+        "chg_5d_pct": pct(last, c[-6]) if len(c) >= 6 else None,
+        "chg_20d_pct": pct(last, c[-21]) if len(c) >= 21 else None,
+        "from_20d_high_pct": pct(last, max(win)),
+        "from_20d_low_pct": pct(last, min(win)),
+        "ma20": ma(20),
+        "ma50": ma(50),
+        "above_ma20": (last > ma(20)) if ma(20) else None,
+        "above_ma50": (last > ma(50)) if ma(50) else None,
+        "daily_vol_20d_pct": vol,
+        "volume_vs_20d_avg": round(volumes[-1] / (sum(v20) / len(v20)), 2) if v20 and sum(v20) else None,
+    }
+
+
+def market_snapshot(S: Strategy, now: datetime) -> tuple[dict, dict[str, float]]:
+    """Per-symbol features + short close series. Returns (market dict for the prompt, last price per symbol)."""
+    daily = bars(S, TimeFrame.Day, now - timedelta(days=80))  # ~55 trading days so ma50 exists
     # equities: today's session from ~9am ET; crypto never closes, so show the last 12 hours
     today_start = now - timedelta(hours=12) if S.crypto else datetime.combine(now.date(), time(13, 0), tzinfo=UTC)
     intra = bars(S, TimeFrame(30, TimeFrameUnit.Minute), today_start)
-    lines, last_close = [], {}
+    market, last_close = {}, {}
     sector_of = S.sector_of
     for s in S.symbols:
-        d = [round(b.close, 2) for b in daily.get(s, [])][-20:]
+        d = daily.get(s, [])
         i = [round(b.close, 2) for b in intra.get(s, [])]
-        if d:
-            last_close[s] = i[-1] if i else d[-1]
-        lines.append(f"{s} [{sector_of[s]}] daily closes: {d} | {'last 12h' if S.crypto else 'today'} 30m: {i}")
-    return "\n".join(lines), last_close
+        if not d:
+            continue
+        last = i[-1] if i else d[-1].close
+        last_close[s] = last
+        # today's partial bar would double-count in the 20-day window; use completed days only
+        completed = d[:-1] if d[-1].timestamp.date() == now.date() else d
+        closes, vols = [b.close for b in completed], [b.volume for b in completed] + [d[-1].volume]
+        market[s] = {"sector": sector_of[s], **features(closes, vols, last), "recent_closes": [round(x, 2) for x in closes[-10:]],
+                     ("last_12h_30m" if S.crypto else "today_30m"): i}
+    return market, last_close
 
 
 def headlines(S: Strategy, now: datetime) -> list[str]:
@@ -276,6 +318,9 @@ def daily_summary(S: Strategy, equity: float, cash: float, positions, today: lis
     errors = [e["error"] for e in today if e.get("error")]
     if errors:
         lines.append("\n<b>Errors</b>\n" + "\n".join(f"• {esc(err)}" for err in errors))
+    spent = sum(e.get("cost_usd") or 0 for e in today)
+    if spent:
+        lines.append(f"\nModel spend today ${spent:.3f}")
     return "\n".join(lines)
 
 
@@ -335,7 +380,7 @@ def cycle(S: Strategy, dry_run: bool, summary: bool = True) -> None:
     entry = {"kind": "cycle", "ts": now.isoformat(), "equity": equity, "cash": cash, "market_view": "", "placed": [], "rejected": [], "error": None}
     last_close: dict[str, float] = {}
     try:
-        market_text, last_close = market_snapshot(S, now)
+        market, last_close = market_snapshot(S, now)
         state = {
             "now_utc": now.isoformat(),
             "market_hours": "24/7" if S.crypto else f"{int((clock.next_close - now).total_seconds() // 60)} minutes to close",
@@ -349,19 +394,28 @@ def cycle(S: Strategy, dry_run: bool, summary: bool = True) -> None:
                 for p in positions
             ],
             "recent_journal": [{k: e[k] for k in ("ts", "market_view", "placed", "rejected")} for e in journal[-5:]],
-            "market": market_text,
+            "market": market,
             "news_24h": headlines(S, now),
         }
         resp = llm.responses.parse(
             model=S.model, reasoning={"effort": S.reasoning}, instructions=instructions(S), input=json.dumps(state, default=str), text_format=Decision
         )
         decision = resp.output_parsed or Decision(orders=[], market_view="Model refused to answer; holding.")
+        u = resp.usage
+        entry["tokens_in"], entry["tokens_out"] = (u.input_tokens, u.output_tokens) if u else (None, None)
+        entry["cost_usd"] = cost_usd(S.model, u.input_tokens, u.output_tokens) if u else None
         entry["market_view"] = decision.market_view
         placed, rejected = validate(S, decision.orders, cash, equity, market_value, buys_blocked)
         for o in placed:
             if not dry_run:
                 submit(S, o, market_value)
         entry["placed"], entry["rejected"] = [o.model_dump() for o in placed], rejected
+        if not dry_run:  # what it saw and what it said, for the dashboard's "what it saw" view
+            (S.dir / "prompts").mkdir(exist_ok=True)
+            (S.dir / "prompts" / f"{now:%Y%m%dT%H%M%S}Z.json").write_text(json.dumps(
+                {"ts": entry["ts"], "model": S.model, "reasoning": S.reasoning, "instructions": instructions(S), "input": state,
+                 "output": decision.model_dump(), "usage": {"input_tokens": entry["tokens_in"], "output_tokens": entry["tokens_out"], "cost_usd": entry["cost_usd"]}},
+                indent=1, default=str))
     except Exception as e:  # journal it; the summary surfaces it
         entry["error"] = repr(e)
     print(json.dumps(entry, indent=1, default=str))

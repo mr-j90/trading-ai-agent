@@ -42,6 +42,13 @@ button:disabled { opacity: 0.5; cursor: default; }
 .badge.ended { color: var(--muted); }
 pre { background: color-mix(in oklab, var(--ink) 5%, var(--surface)); padding: 8px 10px; border-radius: 6px; font: inherit; }
 code { font: inherit; color: var(--ink-2); }
+.saw { margin: 8px 0 4px; padding: 10px 12px; border: 1px dashed var(--border); border-radius: 6px; display: flex; flex-direction: column; gap: 8px; }
+.saw .scroll { overflow-x: auto; }
+.saw table.small th, .saw table.small td { padding: 3px 6px; font-size: 11px; }
+.saw ul { margin: 4px 0; padding-left: 16px; }
+.saw pre { max-height: 240px; overflow: auto; }
+.entry .badge { margin-left: 6px; }
+a { color: var(--series-1); }
 .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; background: var(--muted); }
 .dot.live { background: var(--up); box-shadow: 0 0 0 3px color-mix(in oklab, var(--up) 25%, transparent); }
 .dot.halted { background: var(--down); }

@@ -21,6 +21,7 @@ export async function GET() {
       guardExits: journal.filter((e) => e.kind === "guard").reduce((n, e) => n + e.placed.length, 0),
       rejected: journal.reduce((n, e) => n + e.rejected.length, 0),
       errors: journal.filter((e) => e.error).length,
+      cost: journal.reduce((n, e) => n + (e.cost_usd ?? 0), 0),
     };
     if (!headers) return { ...base, equity: null, contributed: S.start_equity, benchmarkValue: null, positions: 0 };
     try {
