@@ -74,7 +74,7 @@ export async function GET() {
     now: now.toISOString(),
     equity: +account.equity,
     cash: +account.buying_power,
-    startOfDayEquity: todayEntries[0]?.equity ?? +account.last_equity,
+    startOfDayEquity: todayEntries.find((e) => e.equity)?.equity ?? +account.last_equity,
     benchmarkReturn,
     halt,
     lastRun: journal.at(-1)?.ts ?? null,

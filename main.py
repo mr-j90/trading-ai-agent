@@ -223,7 +223,8 @@ def halt(reason: str) -> None:
 def daily_summary(equity: float, cash: float, positions, today: list[dict], bench: float | None) -> str:
     agent_ret = equity / START_EQUITY - 1
     lines = [f"<b>Trading agent, {today[-1]['ts'][:10]}</b>"]
-    day = f"{equity / today[0]['equity'] - 1:+.2%} today" if today else ""
+    sod = next((e["equity"] for e in today if e.get("equity")), None)
+    day = f"{equity / sod - 1:+.2%} today" if sod else ""
     lines.append(f"Equity ${equity:.2f} (cash ${cash:.2f}), {day}, {agent_ret:+.2%} since start")
     if bench is not None:
         lines.append(f"Benchmark (equal-weight hold) {bench:+.2%}, gap {(agent_ret - bench) * 100:+.1f} pts")
@@ -246,22 +247,43 @@ def daily_summary(equity: float, cash: float, positions, today: list[dict], benc
 
 
 # ---------- cycle ----------
+def retry(fn, attempts: int = 4, wait: float = 15.0):
+    """Ride out brief network outages (seen: DNS failure that killed the 15:30 run on day 1)."""
+    for i in range(attempts):
+        try:
+            return fn()
+        except Exception as e:
+            if i == attempts - 1:
+                raise
+            print(f"{fn.__name__ if hasattr(fn, '__name__') else 'call'} failed ({e.__class__.__name__}), retrying in {wait:.0f}s")
+            time_module.sleep(wait)
+
+
+def preflight():
+    clock = retry(trading.get_clock)
+    if not clock.is_open:
+        return clock, None, None
+    return clock, retry(trading.get_account), retry(trading.get_all_positions)
+
+
 def cycle(dry_run: bool, summary: bool = True) -> None:
     if HALT.exists():
         print("halted:", HALT.read_text())
         return
-    clock = trading.get_clock()
-    if not clock.is_open:
+    try:
+        clock, account, positions = preflight()
+    except Exception as e:  # journal it so the dashboard and summary show the gap
+        append_journal({"ts": datetime.now(UTC).isoformat(), "equity": None, "cash": None, "market_view": "", "placed": [], "rejected": [], "error": f"preflight: {e!r}"})
+        raise
+    if account is None:
         print("market closed, next open", clock.next_open)
         return
     now = datetime.now(UTC)
-    account = trading.get_account()
-    positions = trading.get_all_positions()
     equity, cash = float(account.equity), float(account.buying_power)
     market_value = {p.symbol: float(p.market_value) for p in positions}
     journal = read_journal()
     today = [e for e in journal if e["ts"][:10] == now.date().isoformat()]
-    sod_equity = today[0]["equity"] if today else equity
+    sod_equity = next((e["equity"] for e in today if e["equity"]), equity)
     buys_blocked = equity < (1 - DAILY_STOP_PCT) * sod_equity
     entry = {"ts": now.isoformat(), "equity": equity, "cash": cash, "market_view": "", "placed": [], "rejected": [], "error": None}
     last_close: dict[str, float] = {}
@@ -310,11 +332,10 @@ def cycle(dry_run: bool, summary: bool = True) -> None:
 def guard(dry_run: bool) -> None:
     if HALT.exists():
         return
-    if not trading.get_clock().is_open:
+    clock, account, positions = preflight()
+    if account is None:
         return
     now = datetime.now(UTC)
-    positions = trading.get_all_positions()
-    account = trading.get_account()
     peaks = json.loads(PEAKS.read_text()) if PEAKS.exists() else {}
     orders, peaks = guard_orders(positions, float(account.equity), peaks)
     if not dry_run:
