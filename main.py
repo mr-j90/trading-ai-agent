@@ -7,6 +7,7 @@ Decisions locked on the wayfinder map: https://github.com/mr-j90/trading-ai-agen
 """
 
 import fcntl
+import html
 import json
 import os
 import sys
@@ -181,6 +182,9 @@ def submit(o: Order, market_value: dict[str, float]):
 
 
 # ---------- reporting ----------
+esc = html.escape  # model text goes inside Telegram HTML
+
+
 def benchmark_return(last_close: dict[str, float]) -> float | None:
     if not BENCHMARK.exists():
         BENCHMARK.write_text(json.dumps(last_close, indent=1))
@@ -190,42 +194,45 @@ def benchmark_return(last_close: dict[str, float]) -> float | None:
     return sum(rets) / len(rets) if rets else None
 
 
-def post_slack(text: str) -> None:
-    url = os.environ.get("SLACK_WEBHOOK_URL")
-    if not url:
-        print("\n[no SLACK_WEBHOOK_URL, summary follows]\n" + text)
+def notify(text: str) -> None:
+    """Telegram sendMessage (HTML). Falls back to stdout when the bot isn't configured."""
+    token, chat = os.environ.get("TELEGRAM_BOT_TOKEN"), os.environ.get("TELEGRAM_CHAT_ID")
+    if not (token and chat):
+        print("\n[telegram not configured, summary follows]\n" + text)
         return
-    req = urllib.request.Request(url, json.dumps({"text": text}).encode(), {"Content-Type": "application/json"})
-    urllib.request.urlopen(req, timeout=10)
+    for i in range(0, len(text), 4000):  # Telegram caps a message at 4096 chars
+        body = json.dumps({"chat_id": chat, "text": text[i : i + 4000], "parse_mode": "HTML", "disable_web_page_preview": True}).encode()
+        req = urllib.request.Request(f"https://api.telegram.org/bot{token}/sendMessage", body, {"Content-Type": "application/json"})
+        urllib.request.urlopen(req, timeout=10)
 
 
 def halt(reason: str) -> None:
     HALT.write_text(reason)
-    post_slack(f":octagonal_sign: Trading agent halted: {reason}")
+    notify(f"⛔ <b>Trading agent halted:</b> {esc(reason)}")
 
 
 def daily_summary(equity: float, cash: float, positions, today: list[dict], bench: float | None) -> str:
     agent_ret = equity / START_EQUITY - 1
-    lines = [f"*Trading agent, {today[-1]['ts'][:10]}*"]
+    lines = [f"<b>Trading agent, {today[-1]['ts'][:10]}</b>"]
     day = f"{equity / today[0]['equity'] - 1:+.2%} today" if today else ""
     lines.append(f"Equity ${equity:.2f} (cash ${cash:.2f}), {day}, {agent_ret:+.2%} since start")
     if bench is not None:
         lines.append(f"Benchmark (equal-weight hold) {bench:+.2%}, gap {(agent_ret - bench) * 100:+.1f} pts")
     placed = [o for e in today for o in e["placed"]]
     rejected = [o for e in today for o in e["rejected"]]
-    lines.append(f"\n*Trades ({len(placed)} placed, {len(rejected)} rejected)*")
-    lines += [f"• {o['side']} ${o['notional_usd']:.0f} {o['symbol']}: {o['reason']}" for o in placed]
-    lines += [f"• ✗ {o['side']} ${o['notional_usd']:.0f} {o['symbol']}: {o['why']}" for o in rejected]
-    lines.append("\n*Positions*")
+    lines.append(f"\n<b>Trades ({len(placed)} placed, {len(rejected)} rejected)</b>")
+    lines += [f"• {o['side']} ${o['notional_usd']:.0f} {o['symbol']}: {esc(o['reason'])}" for o in placed]
+    lines += [f"• ✗ {o['side']} ${o['notional_usd']:.0f} {o['symbol']}: {esc(o['why'])}" for o in rejected]
+    lines.append("\n<b>Positions</b>")
     for sector in ("tech", "blue_collar"):
         ps = [p for p in positions if SECTOR_OF.get(p.symbol) == sector]
         if ps:
-            lines.append(f"_{sector}_: " + ", ".join(f"{p.symbol} ${float(p.market_value):.0f} ({float(p.unrealized_plpc):+.1%})" for p in ps))
-    lines.append("\n*Market view*")
-    lines += [f"• {e['ts'][11:16]}Z {e['market_view']}" for e in today if e["market_view"]]
+            lines.append(f"<i>{sector}</i>: " + ", ".join(f"{p.symbol} ${float(p.market_value):.0f} ({float(p.unrealized_plpc):+.1%})" for p in ps))
+    lines.append("\n<b>Market view</b>")
+    lines += [f"• {e['ts'][11:16]}Z {esc(e['market_view'])}" for e in today if e["market_view"]]
     errors = [e["error"] for e in today if e.get("error")]
     if errors:
-        lines.append("\n*Errors*\n" + "\n".join(f"• {err}" for err in errors))
+        lines.append("\n<b>Errors</b>\n" + "\n".join(f"• {esc(err)}" for err in errors))
     return "\n".join(lines)
 
 
@@ -284,7 +291,7 @@ def cycle(dry_run: bool, summary: bool = True) -> None:
     append_journal(entry)
     if summary and clock.next_close - now <= SUMMARY_WINDOW:
         bench = benchmark_return(last_close) if last_close else None
-        post_slack(daily_summary(equity, cash, positions, today + [entry], bench))
+        notify(daily_summary(equity, cash, positions, today + [entry], bench))
         if equity < KILL_EQUITY:
             halt(f"equity ${equity:.2f} below ${KILL_EQUITY:.0f}")
         elif bench is not None and (equity / START_EQUITY - 1) - bench < -KILL_BENCHMARK_GAP:
