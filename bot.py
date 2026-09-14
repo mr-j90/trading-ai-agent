@@ -39,7 +39,13 @@ COMMANDS = {
 def api(method: str, **params):
     body = json.dumps(params).encode()
     req = urllib.request.Request(f"{API}/{method}", body, {"Content-Type": "application/json"})
-    return json.load(urllib.request.urlopen(req, timeout=40))["result"]
+    for attempt in range(3):  # api.telegram.org resets TLS now and then
+        try:
+            return json.load(urllib.request.urlopen(req, timeout=40))["result"]
+        except OSError:
+            if attempt == 2:
+                raise
+            time.sleep(2)
 
 
 def configured():
