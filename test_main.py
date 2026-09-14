@@ -17,8 +17,8 @@ placed, rejected = validate([o("buy", "NVDA", 60), o("buy", "NVDA", 50)], cash, 
 assert [r["symbol"] for r in rejected] == ["NVDA"] and "cap" in rejected[0]["why"]
 assert len(placed) == 1 and placed[0].notional_usd == 50
 
-# cash runs out across a cycle
-placed, rejected = validate([o("buy", "AAPL", 100), o("buy", "MSFT", 100), o("buy", "META", 100), o("buy", "AMD", 100)], cash, equity, held, False)
+# cash runs out across a cycle (mixed sectors so the sector cap stays out of the way)
+placed, rejected = validate([o("buy", "AAPL", 100), o("buy", "PWR", 100), o("buy", "META", 100), o("buy", "CAT", 100)], cash, equity, held, False)
 assert len(placed) == 3 and "cash" in rejected[0]["why"]
 
 # sells: cannot exceed holding; proceeds don't fund same-cycle buys
