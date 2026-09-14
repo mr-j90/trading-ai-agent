@@ -17,6 +17,14 @@ type Row = {
 };
 
 const POLL_MS = 15_000;
+const THEMES = ["auto", "paper", "dark"] as const;
+type Theme = (typeof THEMES)[number];
+function applyTheme(t: Theme) {
+  try {
+    if (t === "auto") delete document.documentElement.dataset.theme; else document.documentElement.dataset.theme = t;
+    localStorage.setItem("theme", t);
+  } catch {}
+}
 const usd = (n: number) => n.toLocaleString("en-US", { style: "currency", currency: "USD" });
 const pct = (n: number | null, d = 2) => (n == null ? "–" : `${n >= 0 ? "+" : ""}${(n * 100).toFixed(d)}%`);
 const tone = (n: number | null) => (n == null ? "" : n >= 0 ? "up" : "down");
@@ -29,6 +37,9 @@ export default function Page() {
   const [err, setErr] = useState<string | null>(null);
   const [running, setRunning] = useState<string | null>(null);
   const [runOut, setRunOut] = useState<RunResult | null>(null);
+  const [theme, setTheme] = useState<Theme>("auto");
+  useEffect(() => { try { const t = localStorage.getItem("theme") as Theme | null; if (t && THEMES.includes(t)) { setTheme(t); applyTheme(t); } } catch {} }, []);
+  const cycleTheme = () => { const t = THEMES[(THEMES.indexOf(theme) + 1) % THEMES.length]; setTheme(t); applyTheme(t); };
   const tick = (name = sel) =>
     Promise.all([
       fetch("/api/strategies").then(async (r) => { if (!r.ok) throw new Error(await r.text()); setRows((await r.json()).rows); }),
@@ -64,7 +75,10 @@ export default function Page() {
     <main className="wrap">
       <header className="bar">
         <span><span className={`dot ${cur?.halt ? "halted" : cur?.configured ? "live" : ""}`} /> trading agents · paper · {rows.filter((r) => r.configured && !r.halt).length}/{rows.length} live</span>
-        <span className="muted" style={{ textTransform: "none", letterSpacing: 0 }}>updated {hhmm(new Date().toISOString())}{err ? ` · refresh failed: ${err}` : ""}</span>
+        <span className="actions">
+          <button className="theme" onClick={cycleTheme} title="theme: auto → paper → dark">{theme === "auto" ? "◐ auto" : theme === "paper" ? "▤ paper" : "● dark"}</button>
+          <span className="muted">updated {hhmm(new Date().toISOString())}{err ? ` · refresh failed: ${err}` : ""}</span>
+        </span>
       </header>
       {runOut && <RunOutput r={runOut} onClose={() => setRunOut(null)} />}
 
