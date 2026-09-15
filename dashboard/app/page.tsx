@@ -95,6 +95,7 @@ export default function Page() {
       </header>
       <Tape tape={tape} />
       {runOut && <RunOutput r={runOut} onClose={() => setRunOut(null)} />}
+      <News />
 
       <section className="card admin">
         <div className="row">
@@ -331,6 +332,41 @@ function RunOutput({ r, onClose }: { r: RunResult; onClose: () => void }) {
       {e && status === "held" && <p className="muted">held, no orders</p>}
       {r.text && (e ? <details><summary className="muted small">additional output</summary><pre>{r.text}</pre></details> : <p>{r.text}</p>)}
     </div>
+  );
+}
+
+type NewsItem = { id: number; at: string; headline: string; source: string; url: string; symbols: string[] };
+
+/** Last 24h of headlines across the configured watchlists, linking out to the source. Refreshes every minute. */
+function News() {
+  const [items, setItems] = useState<NewsItem[] | null>(null);
+  const [open, setOpen] = useState(true);
+  useEffect(() => {
+    const load = () => fetch("/api/news").then((r) => r.json()).then((j) => setItems(j.items ?? [])).catch(() => setItems([]));
+    load();
+    const id = setInterval(load, 60_000);
+    return () => clearInterval(id);
+  }, []);
+  const ago = (iso: string) => { const m = Math.round((Date.now() - new Date(iso).getTime()) / 60000); return m < 60 ? `${m}m` : `${Math.floor(m / 60)}h`; };
+  return (
+    <section className="card news">
+      <div className="row">
+        <div className="label">News · last 24h {items && <span className="muted">({items.length})</span>}</div>
+        <button onClick={() => setOpen(!open)}>{open ? "collapse" : "expand"}</button>
+      </div>
+      {open && (items == null ? <p className="muted small">loading…</p> : items.length === 0 ? <p className="muted small">nothing in the last 24 hours</p> : (
+        <ul className="news-list">
+          {items.map((n) => (
+            <li key={n.id}>
+              <span className="muted small when">{ago(n.at)}</span>
+              <span className="tags">{n.symbols.slice(0, 4).map((s) => <TV key={s} sym={s} className="tag">{s}</TV>)}</span>
+              <a href={n.url} target="_blank" rel="noopener noreferrer" className="headline">{n.headline}</a>
+              <span className="muted small src">{n.source}</span>
+            </li>
+          ))}
+        </ul>
+      ))}
+    </section>
   );
 }
 
