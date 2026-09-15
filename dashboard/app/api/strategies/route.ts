@@ -8,6 +8,17 @@ export async function GET() {
   const today = new Date().toISOString().slice(0, 10);
   const anyKeys = all.map(keysFor).find(Boolean);
   const clock = anyKeys ? await alpaca<{ is_open: boolean; next_open: string; next_close: string; timestamp: string }>(`${TRADING}/v2/clock`, anyKeys).catch(() => null) : null;
+  // ticker tape: union of configured strategies' watchlists, one snapshot call per asset class
+  const tape: Record<string, { price: number; dayPc: number | null; assetClass: string }> = {};
+  if (anyKeys) {
+    const byClass = new Map<string, (typeof all)[number]>();
+    for (const S of all) if (keysFor(S) && !byClass.has(S.asset_class)) byClass.set(S.asset_class, S);
+    await Promise.all([...byClass.values()].map(async (S) => {
+      const merged = { ...S, watchlist: { all: [...new Set(all.filter((x) => x.asset_class === S.asset_class && keysFor(x)).flatMap((x) => Object.values(x.watchlist).flat()))] } };
+      const px = await prices(merged, anyKeys).catch(() => ({}));
+      for (const [sym, v] of Object.entries(px)) if (v.price) tape[sym] = { ...v, assetClass: S.asset_class };
+    }));
+  }
 
   const rows = await Promise.all(all.map(async (S) => {
     const headers = keysFor(S);
@@ -37,5 +48,5 @@ export async function GET() {
       return { ...base, equity: null, contributed: S.start_equity, benchmarkValue: null, positions: 0, lastError: String(e) };
     }
   }));
-  return Response.json({ now: new Date().toISOString(), clock, rows });
+  return Response.json({ now: new Date().toISOString(), clock, tape, rows });
 }

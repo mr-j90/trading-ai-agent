@@ -34,6 +34,7 @@ export default function Page() {
   const [sel, setSel] = useState<string>(() => { try { return location.hash.slice(1) || "main"; } catch { return "main"; } });
   const [rows, setRows] = useState<Row[] | null>(null);
   const [clock, setClock] = useState<{ is_open: boolean; next_open: string; next_close: string } | null>(null);
+  const [tape, setTape] = useState<Record<string, { price: number; dayPc: number | null; assetClass: string }>>({});
   const [s, setS] = useState<State | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [running, setRunning] = useState<string | null>(null);
@@ -43,7 +44,7 @@ export default function Page() {
   const cycleTheme = () => { const t = THEMES[(THEMES.indexOf(theme) + 1) % THEMES.length]; setTheme(t); applyTheme(t); };
   const tick = (name = sel) =>
     Promise.all([
-      fetch("/api/strategies").then(async (r) => { if (!r.ok) throw new Error(await r.text()); const j = await r.json(); setRows(j.rows); setClock(j.clock); }),
+      fetch("/api/strategies").then(async (r) => { if (!r.ok) throw new Error(await r.text()); const j = await r.json(); setRows(j.rows); setClock(j.clock); setTape(j.tape ?? {}); }),
       fetch(`/api/state?strategy=${name}`).then(async (r) => { if (!r.ok) throw new Error(await r.text()); setS(await r.json()); }),
     ]).then(() => setErr(null)).catch((e) => setErr(String(e)));
   useEffect(() => {
@@ -88,6 +89,7 @@ export default function Page() {
           <span className="muted">updated {hhmm(new Date().toISOString())}{err ? ` · refresh failed: ${err}` : ""}</span>
         </span>
       </header>
+      <Tape tape={tape} />
       {runOut && <RunOutput r={runOut} onClose={() => setRunOut(null)} />}
 
       <section className="card admin">
@@ -324,6 +326,21 @@ function RunOutput({ r, onClose }: { r: RunResult; onClose: () => void }) {
       )}
       {e && status === "held" && <p className="muted">held, no orders</p>}
       {r.text && (e ? <details><summary className="muted small">additional output</summary><pre>{r.text}</pre></details> : <p>{r.text}</p>)}
+    </div>
+  );
+}
+
+/** Scrolling ticker tape of every watchlist symbol. Content is doubled so the loop is seamless. */
+function Tape({ tape }: { tape: Record<string, { price: number; dayPc: number | null; assetClass: string }> }) {
+  const items = Object.entries(tape).sort(([a, x], [b, y]) => x.assetClass.localeCompare(y.assetClass) || a.localeCompare(b));
+  if (!items.length) return null;
+  const fmt = (p: number) => p.toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: p < 10 ? 3 : 2 });
+  const row = items.map(([sym, v]) => (
+    <span key={sym} className={`tick ${tone(v.dayPc)}`}><b>{sym}</b> {fmt(v.price)} <span className="chg">{pct(v.dayPc, 2)}</span></span>
+  ));
+  return (
+    <div className="tape" aria-label="watchlist prices" style={{ ["--n" as any]: items.length }}>
+      <div className="tape-track">{row}{row.map((el) => <span key={`${el.key}-2`} aria-hidden className={el.props.className}>{el.props.children}</span>)}</div>
     </div>
   );
 }
