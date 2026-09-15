@@ -33,6 +33,7 @@ const hhmm = (iso: string) => new Date(iso).toLocaleTimeString("en-US", { hour: 
 export default function Page() {
   const [sel, setSel] = useState<string>(() => { try { return location.hash.slice(1) || "main"; } catch { return "main"; } });
   const [rows, setRows] = useState<Row[] | null>(null);
+  const [clock, setClock] = useState<{ is_open: boolean; next_open: string; next_close: string } | null>(null);
   const [s, setS] = useState<State | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [running, setRunning] = useState<string | null>(null);
@@ -42,7 +43,7 @@ export default function Page() {
   const cycleTheme = () => { const t = THEMES[(THEMES.indexOf(theme) + 1) % THEMES.length]; setTheme(t); applyTheme(t); };
   const tick = (name = sel) =>
     Promise.all([
-      fetch("/api/strategies").then(async (r) => { if (!r.ok) throw new Error(await r.text()); setRows((await r.json()).rows); }),
+      fetch("/api/strategies").then(async (r) => { if (!r.ok) throw new Error(await r.text()); const j = await r.json(); setRows(j.rows); setClock(j.clock); }),
       fetch(`/api/state?strategy=${name}`).then(async (r) => { if (!r.ok) throw new Error(await r.text()); setS(await r.json()); }),
     ]).then(() => setErr(null)).catch((e) => setErr(String(e)));
   useEffect(() => {
@@ -78,7 +79,10 @@ export default function Page() {
   return (
     <main className="wrap">
       <header className="bar">
-        <span><span className={`dot ${cur?.halt ? "halted" : cur?.configured ? "live" : ""}`} /> trading agents · paper · {rows.filter((r) => r.configured && !r.halt).length}/{rows.length} live</span>
+        <span className="actions">
+          <span><span className={`dot ${cur?.halt ? "halted" : cur?.configured ? "live" : ""}`} /> trading agents · paper · {rows.filter((r) => r.configured && !r.halt).length}/{rows.length} live</span>
+          <MarketStatus clock={clock} />
+        </span>
         <span className="actions">
           <button className="theme" onClick={cycleTheme} title="theme: auto → paper → dark">{theme === "auto" ? "◐ auto" : theme === "paper" ? "▤ paper" : "● dark"}</button>
           <span className="muted">updated {hhmm(new Date().toISOString())}{err ? ` · refresh failed: ${err}` : ""}</span>
@@ -321,6 +325,20 @@ function RunOutput({ r, onClose }: { r: RunResult; onClose: () => void }) {
       {e && status === "held" && <p className="muted">held, no orders</p>}
       {r.text && (e ? <details><summary className="muted small">additional output</summary><pre>{r.text}</pre></details> : <p>{r.text}</p>)}
     </div>
+  );
+}
+
+function MarketStatus({ clock }: { clock: { is_open: boolean; next_open: string; next_close: string } | null }) {
+  if (!clock) return null;
+  const et = (iso: string) => new Date(iso).toLocaleString("en-US", { timeZone: "America/New_York", weekday: "short", hour: "numeric", minute: "2-digit" });
+  const mins = Math.max(0, Math.round((new Date(clock.is_open ? clock.next_close : clock.next_open).getTime() - Date.now()) / 60000));
+  const dur = mins >= 60 ? `${Math.floor(mins / 60)}h ${mins % 60}m` : `${mins}m`;
+  return (
+    <span className="market">
+      <span className={`pill ${clock.is_open ? "open" : "closed"}`}><span className="dot" /> US market {clock.is_open ? "open" : "closed"}</span>
+      <span className="muted small">{clock.is_open ? `closes in ${dur}` : `opens ${et(clock.next_open)} ET`}</span>
+      <span className="pill open"><span className="dot" /> crypto 24/7</span>
+    </span>
   );
 }
 

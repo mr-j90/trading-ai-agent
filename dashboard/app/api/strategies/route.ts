@@ -6,6 +6,8 @@ export const dynamic = "force-dynamic";
 export async function GET() {
   const all = strategies();
   const today = new Date().toISOString().slice(0, 10);
+  const anyKeys = all.map(keysFor).find(Boolean);
+  const clock = anyKeys ? await alpaca<{ is_open: boolean; next_open: string; next_close: string; timestamp: string }>(`${TRADING}/v2/clock`, anyKeys).catch(() => null) : null;
 
   const rows = await Promise.all(all.map(async (S) => {
     const headers = keysFor(S);
@@ -35,5 +37,5 @@ export async function GET() {
       return { ...base, equity: null, contributed: S.start_equity, benchmarkValue: null, positions: 0, lastError: String(e) };
     }
   }));
-  return Response.json({ now: new Date().toISOString(), rows });
+  return Response.json({ now: new Date().toISOString(), clock, rows });
 }
