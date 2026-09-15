@@ -29,6 +29,10 @@ const usd = (n: number) => n.toLocaleString("en-US", { style: "currency", curren
 const pct = (n: number | null, d = 2) => (n == null ? "–" : `${n >= 0 ? "+" : ""}${(n * 100).toFixed(d)}%`);
 const tone = (n: number | null) => (n == null ? "" : n >= 0 ? "up" : "down");
 const hhmm = (iso: string) => new Date(iso).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" });
+const tv = (sym: string) => `https://www.tradingview.com/chart/?symbol=${encodeURIComponent(sym.replace("/", ""))}`;
+const TV = ({ sym, children, className }: { sym: string; children: React.ReactNode; className?: string }) => (
+  <a href={tv(sym)} target="_blank" rel="noopener noreferrer" className={className} title={`${sym} on TradingView`} onClick={(e) => e.stopPropagation()}>{children}</a>
+);
 
 export default function Page() {
   const [sel, setSel] = useState<string>(() => { try { return location.hash.slice(1) || "main"; } catch { return "main"; } });
@@ -187,9 +191,9 @@ function Detail({ s, sel }: { s: State; sel: string }) {
                 <div className="muted small">{sector}</div>
                 <div className="chips">
                   {syms.map((sym) => (
-                    <span key={sym} className={`chip ${tone(s.prices[sym]?.dayPc)} ${s.positions.some((p) => p.symbol === sym) ? "held" : ""}`} title={s.prices[sym]?.price ? usd(s.prices[sym].price) : ""}>
+                    <TV key={sym} sym={sym} className={`chip ${tone(s.prices[sym]?.dayPc)} ${s.positions.some((p) => p.symbol === sym) ? "held" : ""}`}>
                       {sym} <b>{pct(s.prices[sym]?.dayPc, 1)}</b>
-                    </span>
+                    </TV>
                   ))}
                 </div>
               </div>
@@ -207,7 +211,7 @@ function Detail({ s, sel }: { s: State; sel: string }) {
               <tbody>
                 {s.positions.map((p) => (
                   <tr key={p.symbol}>
-                    <td><b>{p.symbol}</b></td><td className="muted">{p.sector}</td>
+                    <td><TV sym={p.symbol} className="plain"><b>{p.symbol}</b></TV></td><td className="muted">{p.sector}</td>
                     <td className="r muted">{p.qty.toLocaleString(undefined, { maximumFractionDigits: 6 })}</td>
                     <td className="r">{usd(p.avgEntry)}</td><td className="r">{usd(p.price)}</td>
                     <td className="r">{usd(p.marketValue)}</td>
@@ -335,12 +339,12 @@ function Tape({ tape }: { tape: Record<string, { price: number; dayPc: number | 
   const items = Object.entries(tape).sort(([a, x], [b, y]) => x.assetClass.localeCompare(y.assetClass) || a.localeCompare(b));
   if (!items.length) return null;
   const fmt = (p: number) => p.toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: p < 10 ? 3 : 2 });
-  const row = items.map(([sym, v]) => (
-    <span key={sym} className={`tick ${tone(v.dayPc)}`}><b>{sym}</b> {fmt(v.price)} <span className="chg">{pct(v.dayPc, 2)}</span></span>
+  const row = (dup: boolean) => items.map(([sym, v]) => (
+    <TV key={`${sym}${dup ? "-2" : ""}`} sym={sym} className={`tick ${tone(v.dayPc)}`}><b>{sym}</b> {fmt(v.price)} <span className="chg">{pct(v.dayPc, 2)}</span></TV>
   ));
   return (
-    <div className="tape" aria-label="watchlist prices" style={{ ["--n" as any]: items.length }}>
-      <div className="tape-track">{row}{row.map((el) => <span key={`${el.key}-2`} aria-hidden className={el.props.className}>{el.props.children}</span>)}</div>
+    <div className="tape" aria-label="watchlist prices, click for TradingView" style={{ ["--n" as any]: items.length }}>
+      <div className="tape-track">{row(false)}<span aria-hidden className="tape-dup">{row(true)}</span></div>
     </div>
   );
 }

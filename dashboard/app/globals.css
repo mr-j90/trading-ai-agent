@@ -71,8 +71,11 @@ a { color: var(--series-1); }
 .tape { overflow: hidden; border-top: 1px solid var(--grid); border-bottom: 1px solid var(--grid); margin: 0 0 12px; padding: 6px 0; white-space: nowrap; }
 .tape-track { display: inline-flex; gap: 28px; padding-right: 28px; animation: tape calc(var(--n, 20) * 2.2s) linear infinite; will-change: transform; }
 .tape:hover .tape-track { animation-play-state: paused; }
-.tick { color: var(--ink-2); }
+.tape-dup { display: inline-flex; gap: 28px; }
+.tick { color: var(--ink-2); text-decoration: none; }
+.tick:hover b, a.plain:hover b, .chip:hover { text-decoration: underline; }
 .tick b { color: var(--ink); }
+a.plain, a.chip { text-decoration: none; color: inherit; }
 .tick.up .chg { color: var(--up); } .tick.down .chg { color: var(--down); }
 @keyframes tape { from { transform: translateX(0); } to { transform: translateX(-50%); } }
 @media (prefers-reduced-motion: reduce) { .tape-track { animation: none; flex-wrap: wrap; white-space: normal; } .tape-track > [aria-hidden] { display: none; } }
